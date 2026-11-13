@@ -38,7 +38,7 @@
   var noiseCache = {};
   function noiseData(kind) {
     if (noiseCache[kind]) return noiseCache[kind];
-    var n = SR * (kind === 'white' ? 3 : 13), xf = SR >> 1, tot = n + xf;
+    var n = SR * 13, xf = SR >> 1, tot = n + xf;
     var raw = new Float32Array(tot);
     var r = rng(kind === 'white' ? 11 : kind === 'pink' ? 22 : 33);
     var b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, last = 0, i, w;
@@ -66,7 +66,10 @@
     return (noiseCache[kind] = out);
   }
 
-  var IR_CFG = { focus: [2.4, 0.55], deep: [3.2, 0.4], sleep: [4.2, 0.3] };
+  var IR_CFG = { focus: [2.4, 0.55], deep: [3.2, 0.4], sleep: [4.2, 0.3], rest: [3.4, 0.4], end: [3.0, 0.45] };
+  // đường cong vào/ra đẳng công suất cho các hợp âm chuyển tiếp nhau
+  var EQ_IN = new Float32Array(33), EQ_OUT = new Float32Array(33);
+  for (var q = 0; q < 33; q++) { EQ_IN[q] = Math.sin(Math.PI / 2 * q / 32); EQ_OUT[q] = Math.cos(Math.PI / 2 * q / 32); }
   var irCache = {};
   function irData(mode) {
     if (irCache[mode]) return irCache[mode];
@@ -190,7 +193,10 @@
         var lp = biquad('lowpass', o.q || 0.6);
         auto(lp.frequency, [[t, o.fc0], [t + dur * 0.5, o.fc1], [end, o.fc0]]);
         var env = ctx.createGain();
-        auto(env.gain, [[t, 0], [t + o.a, 1], [Math.max(t + o.a, end - o.r), 1], [end, 0]]);
+        if (o.eq) {
+          if (o.a > 0) env.gain.setValueCurveAtTime(EQ_IN, t, o.a);
+          env.gain.setValueCurveAtTime(EQ_OUT, end - o.r, o.r);
+        } else auto(env.gain, [[t, 0], [t + o.a, 1], [Math.max(t + o.a, end - o.r), 1], [end, 0]]);
         lp.connect(env); env.connect(o.dest[side]); done(end + 0.1, env);
         for (var i = 0; i < n; i++) {
           var os = ctx.createOscillator(); os.type = o.type;
@@ -216,13 +222,13 @@
       node.gain.setTargetAtTime(0, t + a, tau);
     }
 
-    // chuông sine mềm (Sleep)
+    // chuông ngân: âm cơ bản kéo dài, các bồi âm tắt nhanh hơn
     K.bell = lazy(function (t, f, vel, tau, dest) {
-      var parts = [[1, 1, tau], [2, 0.2, tau * 0.5], [3.01, 0.06, tau * 0.3]];
+      var parts = [[1, 1, tau], [2, 0.3, tau * 0.55], [3, 0.1, tau * 0.35], [4.16, 0.04, tau * 0.2]];
       for (var i = 0; i < parts.length; i++) {
         var p = parts[i], os = ctx.createOscillator(), g = ctx.createGain();
         os.frequency.value = f * p[0];
-        decay(g, t, 0.035, vel * p[1], p[2]);
+        decay(g, t, 0.03, vel * p[1], p[2]);
         os.connect(g); g.connect(dest);
         os.start(t); os.stop(t + 0.04 + p[2] * 7); done(t + 0.1 + p[2] * 7, g);
       }
@@ -291,6 +297,16 @@
       src.start(t, K.r.f() * 2.5, 0.12); done(t + 0.2, g);
     });
 
+    // một giọt mưa: tiếng lách tách rất ngắn
+    K.drop = lazy(function (t, vel, f, dest) {
+      var src = ctx.createBufferSource(); src.buffer = noiseBuf('white');
+      var bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = 2.5;
+      var g = ctx.createGain();
+      decay(g, t, 0.001, vel, 0.008);
+      src.connect(bp); bp.connect(g); g.connect(dest);
+      src.start(t, K.r.f() * 12, 0.08); done(t + 0.15, g);
+    });
+
     return K;
   }
 
@@ -309,13 +325,6 @@
     iv:  { bass: -7, pad: [-7, 5, 12, 15],  next: ['i', 'VI', 'i'] },
     VII: { bass: -2, pad: [-2, 10, 14, 17], next: ['i', 'i', 'VI'] }
   };
-  var SLEEP_CH = [
-    { bass: 0,  pad: [0, 7, 14, 16] },
-    { bass: -7, pad: [-7, 5, 12, 16] },
-    { bass: -3, pad: [-3, 7, 12, 16] },
-    { bass: 0,  pad: [0, 7, 9, 16] },
-    { bass: -5, pad: [-5, 2, 7, 14] }
-  ];
 
   // tiến trình hợp âm của cả phiên, sinh dần theo chỉ số để các chunk khớp nhau
   function chordAt(s, table, first, i) {
@@ -341,11 +350,24 @@
     return s.patterns[i];
   }
 
-  function genFocus(K, s, ci, len) {
+  // chuông báo chuyển pha Pomodoro: vào tập trung (đi lên), vào nghỉ (đi xuống), kết thúc buổi
+  var CHIMES = {
+    focus: [[7, 0], [12, 0.42]],
+    rest: [[12, 0], [7, 0.5], [4, 1.0]],
+    end: [[0, 0], [4, 0.6], [7, 1.2], [12, 1.8]]
+  };
+  function chime(K, s, kind, t0) {
+    var base = s.root + 24; while (base < 67) base += 12; while (base > 78) base -= 12;
+    var bus = K.bus(0, 0.5, 0.7);
+    CHIMES[kind].forEach(function (n) { K.bell(t0 + n[1], mtof(base + n[0]), 0.2, kind === 'end' ? 2.4 : 1.6, bus); });
+  }
+
+  function genFocus(K, s, ci, len, prog, spec) {
     var beat = 60 / s.bpm, bar = beat * 4, st = beat / 2;
     var bar0 = ci * s.chunkBars, nBars = Math.ceil(len / bar), g0 = bar0 * bar;
     var r = rng(s.seed + 7919 * (ci + 1));
     var ctx = K.ctx, b, k;
+    if (spec && spec.chime) chime(K, s, spec.chime, 1.2);
 
     K.makeDelay(beat * 0.75, 0.38, 2200, 0.5);
 
@@ -458,61 +480,119 @@
     }
   }
 
-  /* ---------- Sleep ---------- */
+  /* ---------- Sleep và nhạc nghỉ: nền đều, không nhịp ---------- */
 
   var MAJ_PENT = [0, 2, 4, 7, 9];
+  // các bè trên, tính từ quãng tám phía trên nốt trì
+  var CALM_CH = [[7, 12, 16, 19], [5, 9, 12, 17], [4, 9, 12, 16], [7, 12, 14, 19], [5, 12, 14, 21], [7, 11, 14, 16]];
+  var RAIN_HISS = 0.1, RAIN_BODY = 0.4, RAIN_DROP = 0.09, WAVE_FLOOR = 0.25, WAVE_PEAK = 0.75;
 
-  function genSleep(K, s, ci, len, prog) {
-    var r = rng(s.seed + 7919 * (ci + 1)), t, prev = -1;
-    var calm = 1 - 0.5 * prog;
-
-    K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 320]], q: 0.5, g: [[0, 0.07]], dest: K.bus(0, 1, 0.1) });
-
-    var pad = [K.bus(-0.35, 0.6, 0.6), K.bus(0.35, 0.6, 0.6)], subBus = K.bus(0, 1, 0.1);
-    t = 0;
-    while (t < len) {
-      var idx; do { idx = r.int(SLEEP_CH.length); } while (idx === prev);
-      prev = idx;
-      var ch = SLEEP_CH[idx], dur = r.range(26, 38), a = t === 0 ? 5 : r.range(8, 12), rel = r.range(10, 14);
-      K.pad(t, dur, ch.pad.map(function (o) { return s.root + 12 + o; }), {
-        type: 'triangle', det: 4, a: a, r: rel, peak: 0.2 * calm,
-        fc0: 480, fc1: r.range(650, 950) * (1 - 0.3 * prog), q: 0.5, dest: pad
-      });
-      var bm = s.root + ch.bass; while (bm < 36) bm += 12;
-      K.sine(t, dur, mtof(bm), { a: a, r: rel, peak: 0.055, dest: subBus });
-      t += dur * r.range(0.55, 0.68);
+  function calmChord(s, i) {
+    while (s.chords.length <= i) {
+      var n = s.chords.length, c = 0;
+      if (n) do { c = s.rT.int(CALM_CH.length); } while (c === s.chords[n - 1]);
+      s.chords.push(c);
     }
+    return CALM_CH[s.chords[i]];
+  }
 
-    // sóng vỗ chậm, khoảng 5–6 nhịp mỗi phút
-    t = r.range(0, 4);
-    while (t < len) {
-      var up = r.range(3.5, 5.5), down = r.range(5.5, 8), pk = r.range(0.55, 1) * 0.6;
-      K.noise(t, up + down, {
-        kind: 'pink', ftype: 'lowpass', q: 0.6,
-        f: [[t, 220], [t + up, r.range(600, 1100) * (1 - 0.4 * prog)], [t + up + down, 200]],
-        g: [[t, 0], [t + up, pk], [t + up + down, 0]],
-        dest: K.bus(r.pick([-0.5, -0.2, 0.2, 0.5]), 1, 0.25)
-      });
-      t += up + down - r.range(0.5, 2.5);
-    }
-
-    // chuông thưa, thưa dần khi gần hết giờ
-    var bells = [K.bus(-0.4, 0.3, 0.8), K.bus(0, 0.3, 0.8), K.bus(0.4, 0.3, 0.8)];
-    t = r.range(3, 8);
-    while (t < len) {
-      var deg = r.int(8), cnt = r.chance(0.35) ? (r.chance(0.3) ? 3 : 2) : 1, tt = t;
-      for (var i = 0; i < cnt; i++) {
-        var d = Math.max(0, Math.min(9, deg));
-        var m = s.root + 24 + MAJ_PENT[d % 5] + 12 * Math.floor(d / 5);
-        K.bell(tt, mtof(m), r.range(0.05, 0.1) * (1 - 0.6 * prog), r.range(2.2, 3.4), bells[r.int(3)]);
-        deg += r.chance(0.65) ? -1 : 1;
-        tt += r.range(0.9, 1.6);
+  // Chuông của Sleep theo thời gian tính từ đầu phiên: khoảng 100 giây đầu gõ chậm, đều,
+  // thành từng câu đi xuống để báo hiệu giờ ngủ; sau đó thưa dần rồi chỉ còn lác đác.
+  function bellsUntil(s, T) {
+    var r = s.rB;
+    while (s.bellT < T) {
+      var t = s.bellT, n, step = 0, gap, vel, deg, i;
+      if (t < 100) { n = 3 + r.int(2); step = r.range(3.0, 3.8); gap = r.range(4.5, 6.5); vel = 0.13; deg = 5 + r.int(4); }
+      else if (t < 300) { n = 1 + r.int(2); step = r.range(3.4, 4.2); gap = r.range(9, 15); vel = 0.09; deg = 3 + r.int(6); }
+      else { n = 1; gap = r.range(22, 40); vel = 0.06; deg = 3 + r.int(6); }
+      for (i = 0; i < n; i++) {
+        s.bells.push({ t: t + i * step, deg: deg, vel: vel * r.range(0.85, 1), tau: r.range(3.6, 5), pan: r.int(3) });
+        deg = Math.max(0, deg - 1 - (r.chance(0.3) ? 1 : 0));
       }
-      t += r.range(4.5, 10) * (1 + 1.6 * prog);
+      s.bellT = t + (n - 1) * step + gap;
     }
   }
 
-  var GEN = { focus: genFocus, deep: genDeep, sleep: genSleep };
+  // tiếng mưa hoặc sóng vào dần từ phút thứ 4 đến phút thứ 7
+  function natureLevel(tg) { return Math.max(0, Math.min(1, (tg - 240) / 180)); }
+
+  function genCalm(K, s, ci, len, prog, spec) {
+    var sleep = s.mode === 'sleep', g0 = ci * s.B, D = s.B / 2, F = s.X;
+    var r = rng(s.seed + 7919 * (ci + 1)), t, i;
+    if (spec && spec.chime) chime(K, s, spec.chime, 1.2);
+
+    // nền: nhiễu hồng rất khẽ và ba nốt trì giữ nguyên suốt
+    K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, sleep ? 420 : 700]], q: 0.5, g: [[0, sleep ? 0.12 : 0.08]], dest: K.bus(0, 1, 0.1) });
+    var holdBus = K.bus(0, 1, 0.15);
+    [[0, 0.03], [12, 0.045], [19, 0.02]].forEach(function (p) {
+      K.sine(0, len + 1, mtof(s.root + p[0]), { a: 0.01, r: 0.01, peak: p[1], dest: holdBus });
+    });
+
+    // hợp âm: mỗi hợp âm giữ D giây rồi chuyển sang hợp âm kế bằng crossfade đẳng công suất,
+    // không lệch tông giữa hai kênh, nên mức âm không nhấp nhô
+    var pad = [K.bus(-0.3, 0.6, 0.6), K.bus(0.3, 0.6, 0.6)], c0 = 2 * ci;
+    var fc = (sleep ? 700 : 1100) * (1 - 0.25 * prog);
+    for (i = c0 - 1; (i - c0) * D < len; i++) {
+      if (i < 0) continue;
+      var t0 = (i - c0) * D, st = Math.max(0, t0);
+      K.pad(st, t0 + D + F - st, calmChord(s, i).map(function (o) { return s.root + 12 + o; }), {
+        type: 'triangle', det: 0, eq: true, a: t0 < 0 ? 0 : F, r: F, peak: 0.075, fc0: fc, fc1: fc, q: 0.5, dest: pad
+      });
+    }
+
+    var bells = [K.bus(-0.35, 0.3, 0.85), K.bus(0, 0.3, 0.85), K.bus(0.35, 0.3, 0.85)];
+    function note(t, deg, vel, tau, pan) {
+      var d = Math.max(0, Math.min(9, deg));
+      K.bell(t, mtof(s.root + 24 + MAJ_PENT[d % 5] + 12 * Math.floor(d / 5)), vel, tau, bells[pan]);
+    }
+    if (!sleep) {
+      t = r.range(4, 9);
+      while (t < len) { note(t, 2 + r.int(7), r.range(0.05, 0.08), r.range(2.4, 3.4), r.int(3)); t += r.range(6, 11); }
+      return;
+    }
+    bellsUntil(s, g0 + len);
+    for (i = 0; i < s.bells.length; i++) {
+      var b = s.bells[i];
+      if (b.t >= g0 && b.t < g0 + len) note(b.t - g0, b.deg, b.vel * (1 - 0.6 * prog), b.tau, b.pan);
+    }
+
+    var lv0 = natureLevel(g0), lv1 = natureLevel(g0 + len), calm = 1 - 0.35 * prog;
+    if (lv1 <= 0) return;
+    function lvAt(t) { return (lv0 + (lv1 - lv0) * t / len) * calm; }
+    if (s.nature === 'rain') {
+      [-0.6, 0.6].forEach(function (pan) {
+        var dest = K.bus(pan, 1, 0.15);
+        K.noise(0, len, { kind: 'white', ftype: 'bandpass', f: [[0, 2600]], q: 0.35, g: [[0, RAIN_HISS * lvAt(0)], [len, RAIN_HISS * lvAt(len)]], dest: dest });
+        K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 1100]], q: 0.5, g: [[0, RAIN_BODY * lvAt(0)], [len, RAIN_BODY * lvAt(len)]], dest: dest });
+      });
+      var drops = [K.bus(-0.7, 1, 0.1), K.bus(-0.25, 1, 0.1), K.bus(0.25, 1, 0.1), K.bus(0.7, 1, 0.1)];
+      t = 0;
+      while (t < len) {
+        if (lvAt(t) > 0.05) K.drop(t, r.range(0.2, 1) * RAIN_DROP * lvAt(t), r.range(2500, 7000), drops[r.int(4)]);
+        t += r.range(0.03, 0.3);
+      }
+    } else {
+      // sóng: luôn có một lớp nền, các con sóng dâng lên trên lớp đó chứ không tắt hẳn
+      K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 600]], q: 0.5, g: [[0, WAVE_FLOOR * lvAt(0)], [len, WAVE_FLOOR * lvAt(len)]], dest: K.bus(0, 1, 0.15) });
+      t = r.range(0, 3);
+      while (t < len) {
+        var up = r.range(3, 4.5), down = r.range(6, 9), pk = r.range(0.6, 1) * WAVE_PEAK * lvAt(t);
+        if (pk > 0.002) {
+          K.noise(t, up + down, {
+            kind: 'pink', ftype: 'lowpass', q: 0.6,
+            f: [[t, 350], [t + up, r.range(1100, 1900)], [t + up + down, 350]],
+            g: [[t, 0], [t + up, pk], [t + up + down, 0]],
+            dest: K.bus(r.pick([-0.5, -0.2, 0.2, 0.5]), 1, 0.2)
+          });
+        }
+        t += (up + down) * r.range(0.7, 0.85);
+      }
+    }
+  }
+
+  function genEnd(K, s) { chime(K, s, 'end', 0.4); }
+
+  var GEN = { focus: genFocus, deep: genDeep, sleep: genCalm, rest: genCalm, end: genEnd };
 
   /* ---------- phiên và render ---------- */
 
@@ -535,9 +615,17 @@
       bar = 240 / s.bpm; s.chunkBars = 24; s.B = 24 * bar; s.X = 3 * bar;
       s.per1 = r.range(55, 85); s.per2 = r.range(40, 65);
       s.wet = 0.55; s.trim = 1.0; s.finalFade = 25;
+    } else if (mode === 'end') {
+      s.root = r.pick([48, 50, 53]);
+      s.B = 12; s.X = 2; s.wet = 0.7; s.trim = 1.0; s.finalFade = 3;
     } else {
-      s.root = r.pick([36, 38, 39, 41]);
-      s.B = 84; s.X = 12; s.wet = 0.7; s.trim = 0.75; s.finalFade = 80;
+      // sleep và rest: không có nhịp nên hai đoạn kế nhau có thể phát chồng lên nhau để nối liền mạch
+      var sleep = mode === 'sleep';
+      s.calm = true; s.seamless = true;
+      s.root = r.pick(sleep ? [36, 38, 39, 41] : [41, 43, 45]);
+      s.B = 84; s.X = 12; s.wet = 0.7; s.trim = sleep ? 1.0 : 1.2; s.finalFade = sleep ? 80 : 15;
+      s.nature = sleep ? r.pick(['rain', 'waves']) : null;
+      s.bells = []; s.bellT = 2.5; s.rB = rng(seed ^ 0x2545F491);
     }
     return s;
   }
@@ -560,7 +648,11 @@
     str(36, 'data'); view.setUint32(40, bytes, true);
   }
 
-  /* spec: { chunks: n } hoặc { final: giây }, kèm fadeIn (giây) và prog [đầu, cuối] cho Sleep.
+  /* spec: { chunks: n } hoặc { final: giây }, kèm:
+   *   fadeIn  giây mở dần ở đầu đoạn
+   *   xin     đầu đoạn dùng đường cong crossfade dài X giây, để phát chồng lên đuôi đoạn trước
+   *   chime   'focus' | 'rest': chuông báo ở đầu đoạn
+   *   prog    [đầu, cuối] tiến độ hẹn giờ của Sleep
    * Trả về null nếu aborted() báo huỷ giữa chừng. */
   function renderPiece(s, spec, aborted) {
     if (!OAC) return Promise.reject(new Error('Trình duyệt không hỗ trợ OfflineAudioContext'));
@@ -588,14 +680,15 @@
     var fadeInF = Math.round((spec.fadeIn || 4) * SR);
     var finF = spec.final ? Math.round(Math.min(Af * 0.6, s.finalFade * SR)) : 0;
     var prog = spec.prog || [0, 0], trim = s.trim, ci0 = s.ci, carry = null;
-    var HALF = Math.PI / 2, xpow = s.mode === 'sleep' ? 1 : 1.5;
+    var HALF = Math.PI / 2, xpow = s.calm ? 1 : 1.5;
+    var tailPow = s.seamless && !spec.final ? xpow : 2;
 
     function chunk(k) {
       if (aborted && aborted()) return Promise.resolve(null);
       var len = lens[k], last = k === n - 1;
       var ctx = new OAC(2, len, SR);
       var K = makeKit(ctx, s, ci0 + k, len / SR);
-      GEN[s.mode](K, s, ci0 + k, len / SR, prog[0] + (prog[1] - prog[0]) * (n > 1 ? k / (n - 1) : 0));
+      GEN[s.mode](K, s, ci0 + k, len / SR, prog[0] + (prog[1] - prog[0]) * (n > 1 ? k / (n - 1) : 0), k === 0 ? spec : null);
       K.sort();
       var lazyOk = typeof ctx.suspend === 'function' && typeof ctx.resume === 'function';
       K.flush(lazyOk ? WIN + LEAD : Infinity);
@@ -612,11 +705,14 @@
         var base = k * Bf, acc = 0, accN = 0, u, g, l, r, gi, o, e;
         for (var i = 0; i < len; i++) {
           g = 1;
-          if (k === 0) { if (i < fadeInF) { u = i / fadeInF; g = u * u * (3 - 2 * u); } }
+          if (k === 0) {
+            if (spec.xin) { if (i < Xf) g = Math.pow(Math.sin(HALF * i / Xf), xpow); }
+            else if (i < fadeInF) { u = i / fadeInF; g = u * u * (3 - 2 * u); }
+          }
           else if (i < Xf) g = Math.pow(Math.sin(HALF * i / Xf), xpow);
           if (i >= tail) {
             u = (i - tail) / Xf;
-            g *= Math.pow(Math.cos(HALF * u), last ? 2 : xpow);
+            g *= Math.pow(Math.cos(HALF * u), last ? tailPow : xpow);
           }
           l = L[i] * g; r = R[i] * g;
           if (carry && i < Xf) { l += carry[0][i]; r += carry[1][i]; }

@@ -2,9 +2,9 @@
 
 Âm thanh nền tự sinh để tập trung và ngủ, chạy hoàn toàn trên trình duyệt.
 
-- **Focus**: nhịp nhẹ và sáng, cho việc thường ngày.
+- **Focus**: nhịp nhẹ và sáng, cho việc thường ngày. Có Pomodoro: chọn số phút tập trung, số phút nghỉ và số vòng; chuông báo mỗi lần đổi pha.
 - **Deep Focus**: trầm, đều, ít biến động.
-- **Sleep**: chậm, ấm, lắng dần; có hẹn giờ tự tắt.
+- **Sleep**: mở đầu bằng chuông chậm, nền đều, sau vài phút có mưa hoặc sóng; có hẹn giờ tự tắt.
 
 Mỗi lần phát là một bản mới. Nhạc được sinh bằng Web Audio (`OfflineAudioContext`) thành từng đoạn WAV rồi phát qua thẻ `<audio>`, nên vẫn chạy khi khoá màn hình điện thoại. Không dùng mẫu âm thanh hay thư viện ngoài.
 
