@@ -1,6 +1,6 @@
 /* Chạy được khi không có mạng. Có mạng thì luôn lấy bản mới nhất (chờ tối đa 3 giây),
  * mất mạng hoặc mạng chậm thì dùng bản đã lưu. */
-var CACHE = 'lang-v4';
+var CACHE = 'lang-v5';
 var ASSETS = ['./', 'index.html', 'app.js', 'engine.js', 'manifest.webmanifest',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 

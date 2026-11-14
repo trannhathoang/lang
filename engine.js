@@ -219,14 +219,15 @@
       os.start(t); os.stop(end + 0.05);
     });
 
-    // Âm thuần giữ suốt chunk (Solfeggio). Chunk nào cũng phát âm này cùng pha, nên ở chỗ hai chunk
-    // hoà vào nhau phải nhân thêm một lần đường cong crossfade để tổng không đổi (sin² + cos² = 1);
-    // nếu không, âm sẽ phồng lên 3 dB ở mỗi mối nối.
+    // Bộ khuếch đại cho những âm mà chunk nào cũng phát giống hệt nhau, cùng pha (âm thuần của
+    // Solfeggio, nền và chuông của Sleep). Ở chỗ hai chunk hoà vào nhau phải nhân thêm một lần
+    // đường cong crossfade để tổng không đổi (sin² + cos² = 1); nếu không, âm sẽ phồng lên 3 dB
+    // ở mỗi mối nối.
     // head, tail: null | 'chunk' (nối hai chunk trong một đoạn) | 'piece' (nối hai đoạn phát ở hai
     // thẻ <audio>, không cùng pha: chuyển nhanh trong 2 giây ở giữa vùng chồng để nếu hai âm có
     // triệt nhau thì cũng chỉ thoáng qua).
-    K.tone = lazy(function (t, f, peak, head, tail, dest) {
-      var os = ctx.createOscillator(), env = ctx.createGain(), n = 129, HALF = Math.PI / 2;
+    K.xgain = function (peak, head, tail) {
+      var env = ctx.createGain(), n = 129, HALF = Math.PI / 2;
       function curve(kind, out) {
         var c = new Float32Array(n);
         for (var i = 0; i < n; i++) {
@@ -239,12 +240,39 @@
         }
         return c;
       }
-      os.frequency.value = f;
+      if (head && len < s.X) head = null;
+      if (tail && len < s.X * (head ? 2 : 1) + 0.05) tail = null;
       if (head) env.gain.setValueCurveAtTime(curve(head, false), 0, s.X); else env.gain.setValueAtTime(peak, 0);
       if (tail) env.gain.setValueCurveAtTime(curve(tail, true), len - s.X, s.X);
+      return env;
+    };
+
+    K.tone = lazy(function (t, f, peak, head, tail, dest) {
+      var os = ctx.createOscillator(), env = K.xgain(peak, head, tail);
+      os.frequency.value = f;
       os.connect(env); env.connect(dest);
       os.start(0);
     });
+
+    // một bè của nền Sleep: âm sin giữ suốt chunk, bắt đầu ở pha cho trước (tính bằng chu kỳ),
+    // để chunk nào cũng phát đúng cùng một sóng
+    K.voice = function (f, phase, amp, dest) {
+      var os = ctx.createOscillator(), g = gain(amp), a = TAU * phase;
+      if (ctx.createPeriodicWave) {
+        os.setPeriodicWave(ctx.createPeriodicWave(
+          new Float32Array([0, Math.sin(a)]), new Float32Array([0, Math.cos(a)]), { disableNormalization: true }));
+      }
+      os.frequency.value = f;
+      os.connect(g); g.connect(dest);
+      os.start(0);
+    };
+
+    K.pan = function (p, dest) {
+      var n = ctx.createStereoPanner ? ctx.createStereoPanner() : ctx.createGain();
+      if (n.pan) n.pan.value = p;
+      n.connect(dest);
+      return n;
+    };
 
     // phím đàn ấm (Study): một dao động tam giác ở giữa, hai răng cưa lệch tông hai bên, bộ lọc khép dần
     K.key = lazy(function (t, f, vel, tau, dest) {
@@ -547,57 +575,159 @@
     }
   }
 
-  // Chuông của Sleep theo thời gian tính từ đầu phiên: khoảng 100 giây đầu gõ chậm, đều,
-  // thành từng câu đi xuống để báo hiệu giờ ngủ; sau đó thưa dần rồi chỉ còn lác đác.
-  function bellsUntil(s, T) {
-    var r = s.rB;
-    while (s.bellT < T) {
-      var t = s.bellT, n, step = 0, gap, vel, deg, i;
-      if (t < 100) { n = 3 + r.int(2); step = r.range(3.0, 3.8); gap = r.range(4.5, 6.5); vel = 0.13; deg = 5 + r.int(4); }
-      else if (t < 300) { n = 1 + r.int(2); step = r.range(3.4, 4.2); gap = r.range(9, 15); vel = 0.09; deg = 3 + r.int(6); }
-      else { n = 1; gap = r.range(22, 40); vel = 0.06; deg = 3 + r.int(6); }
-      for (i = 0; i < n; i++) {
-        s.bells.push({ t: t + i * step, deg: deg, vel: vel * r.range(0.85, 1), tau: r.range(3.6, 5), pan: r.int(3) });
-        deg = Math.max(0, deg - 1 - (r.chance(0.3) ? 1 : 0));
-      }
-      s.bellT = t + (n - 1) * step + gap;
-    }
-  }
-
-  // tiếng mưa hoặc sóng vào dần từ phút thứ 4 đến phút thứ 7
-  function natureLevel(tg) { return Math.max(0, Math.min(1, (tg - 240) / 180)); }
-
+  // nhạc nghỉ giữa các vòng Pomodoro
   function genCalm(K, s, ci, len, prog, spec) {
-    var sleep = s.mode === 'sleep', g0 = ci * s.B;
-    var r = rng(s.seed + 7919 * (ci + 1)), t, i;
+    var r = rng(s.seed + 7919 * (ci + 1)), t;
     if (spec && spec.chime) chime(K, s, spec.chime, 1.2);
 
     // nền: nhiễu hồng rất khẽ và ba nốt trì giữ nguyên suốt
-    K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, sleep ? 420 : 700]], q: 0.5, g: [[0, sleep ? 0.12 : 0.08]], dest: K.bus(0, 1, 0.1) });
+    K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 700]], q: 0.5, g: [[0, 0.08]], dest: K.bus(0, 1, 0.1) });
     var holdBus = K.bus(0, 1, 0.15);
     [[0, 0.03], [12, 0.045], [19, 0.02]].forEach(function (p) {
       K.sine(0, len + 1, mtof(s.root + p[0]), { a: 0.01, r: 0.01, peak: p[1], dest: holdBus });
     });
 
     // hợp âm đổi mỗi 42 giây
-    calmPads(K, s, ci, len, CALM_CH, 2, s.X, {
-      peak: 0.075, fc: (sleep ? 700 : 1100) * (1 - 0.25 * prog), dest: [K.bus(-0.3, 0.6, 0.6), K.bus(0.3, 0.6, 0.6)]
-    });
+    calmPads(K, s, ci, len, CALM_CH, 2, s.X, { peak: 0.075, fc: 1100, dest: [K.bus(-0.3, 0.6, 0.6), K.bus(0.3, 0.6, 0.6)] });
 
     var bells = [K.bus(-0.35, 0.3, 0.85), K.bus(0, 0.3, 0.85), K.bus(0.35, 0.3, 0.85)];
-    function note(t, deg, vel, tau, pan) {
-      var d = Math.max(0, Math.min(9, deg));
-      K.bell(t, mtof(s.root + 24 + MAJ_PENT[d % 5] + 12 * Math.floor(d / 5)), vel, tau, bells[pan]);
+    t = r.range(4, 9);
+    while (t < len) {
+      var d = 2 + r.int(7);
+      K.bell(t, mtof(s.root + 24 + MAJ_PENT[d % 5] + 12 * Math.floor(d / 5)), r.range(0.05, 0.08), r.range(2.4, 3.4), bells[r.int(3)]);
+      t += r.range(6, 11);
     }
-    if (!sleep) {
-      t = r.range(4, 9);
-      while (t < len) { note(t, 2 + r.int(7), r.range(0.05, 0.08), r.range(2.4, 3.4), r.int(3)); t += r.range(6, 11); }
-      return;
+  }
+
+  /* ---------- Sleep: chuông mở đầu, một hợp âm đứng yên, tiếng ồn trầm ---------- */
+
+  // Các nốt của nền, tính bằng nửa cung từ nốt chủ (root + 12): một hợp âm trưởng trải ba quãng tám,
+  // không bao giờ đổi. Mỗi nốt gồm vài bè sin lệch tông nhau chia cho hai kênh; các bè cách nhau
+  // đủ xa để chỗ chúng giao thoa chỉ là rung nhẹ, nhanh, chứ không thành những đợt phồng xẹp chậm.
+  // [nửa cung, biên độ, số bè, độ lệch tối đa (cent), nhóm]
+  var SLEEP_NOTES = [
+    [-12, 0.035, 1, 0, 'low'], [0, 0.06, 1, 0, 'low'], [7, 0.036, 4, 12, 'low'],
+    [12, 0.078, 6, 19, 'up'], [16, 0.108, 6, 16, 'third'], [19, 0.114, 6, 15, 'up'],
+    [24, 0.092, 6, 18, 'up'], [28, 0.023, 2, 6, 'up']
+  ];
+  // Mỗi nhóm đổi mức rất chậm, tính bằng dB: [sau vài phút đầu, khi hẹn giờ gần hết].
+  // Phần trên lặn dần, phần trầm nổi lên một chút, nên càng về sau càng tối và nhỏ.
+  var SLEEP_TREND = { low: [3, -1], up: [-3.5, -5], third: [-7.5, -6] };
+  var SLEEP_PENT = [-5, -3, 0, 2, 4];   // các nốt chuông quanh nốt chủ ở quãng tám cao
+  var SLEEP_BELL = 0.1;
+
+  // Khoảng cách giữa các bè kề nhau của một nốt (tổng bằng 1). Các khoảng phải khác nhau rõ:
+  // nếu đều nhau thì mọi cặp bè giao thoa cùng một nhịp và nền sẽ đập theo nhịp đó.
+  function sleepGaps(r, n) {
+    var g, i, j, ok, sum;
+    do {
+      g = []; sum = 0; ok = true;
+      for (i = 0; i < n; i++) { g.push(r.range(0.7, 1.4)); sum += g[i]; }
+      for (i = 0; i < n; i++) for (j = 0; j < i; j++) if (Math.abs(g[i] - g[j]) < 0.08) ok = false;
+    } while (!ok);
+    return g.map(function (x) { return x / sum; });
+  }
+
+  function sleepSetup(s, r) {
+    var tonic = s.root + 12, i, j;
+    s.notes = SLEEP_NOTES.map(function (d) {
+      var n = { group: d[4], voices: [], p1: r.range(47, 97), a1: r.range(0, TAU), p2: r.range(23, 41), a2: r.range(0, TAU) };
+      var cnt = d[2], flip = r.int(2), gaps = sleepGaps(r, cnt - 1), pos = 0, sq = 0;
+      for (j = 0; j < cnt; j++) {
+        var cents = cnt > 1 ? d[3] * (2 * pos - 1) : 0;
+        pos += gaps[j] || 0;
+        // các bè của một nốt to nhỏ khác nhau, để chỗ giao thoa không bao giờ triệt hẳn
+        var w = cnt > 1 ? r.range(0.55, 1) : 0.707;
+        sq += w * w;
+        n.voices.push({
+          f: Math.fround(mtof(tonic + d[0] + cents / 100)), ph: r.f(), amp: w,
+          side: cnt > 1 ? (j + flip) & 1 : 2                        // 0 trái, 1 phải, 2 giữa
+        });
+      }
+      n.voices.forEach(function (v) { v.amp *= d[1] / (cnt > 1 ? Math.sqrt(sq) : 1); });
+      return n;
+    });
+
+    // Chuông: một câu 5-6 nốt, mỗi phiên một câu, kết ở nốt chủ. Câu đó lặp lại sáu lần trong
+    // khoảng 90 giây đầu, mỗi lần chậm hơn một chút, rồi còn vài nốt lẻ thưa dần và hết hẳn.
+    var m, x;
+    do {
+      m = [r.chance(0.7) ? 0 : -5];
+      for (i = 1 + r.int(2); i < 5; i++) {
+        do { x = r.pick(SLEEP_PENT); } while (x === m[m.length - 1] || (i === 4 && x === 0));
+        m.push(x);
+      }
+      m.push(0);
+    } while (m.join() === '0,-5,-3,2,4,0');
+    var pans = m.map(function () { return r.int(4); });
+    var starts = [3.5, 18.5, 33.5, 49, 66.5, 84.5], steps = [1, 1, 1, 1.25, 1.45, 1.6], lv = [0.6, 0.8, 1, 1, 1, 0.85];
+    s.bells = [];
+    for (i = 0; i < starts.length; i++) {
+      for (j = 0; j < m.length; j++) {
+        var lastN = j === m.length - 1;
+        s.bells.push({
+          t: starts[i] + j * steps[i] + r.range(-0.03, 0.03), semi: m[j], pan: pans[j], tau: lastN ? 0.85 : 0.55,
+          vel: SLEEP_BELL * lv[i] * (lastN ? 1 : j === 0 ? 0.55 : r.range(0.28, 0.4))
+        });
+      }
     }
-    bellsUntil(s, g0 + len);
+    var t = r.range(106, 110), first = true;
+    while (t < 200) {
+      s.bells.push({ t: t, semi: first ? 0 : r.pick(SLEEP_PENT), pan: r.int(4), tau: 0.85, vel: SLEEP_BELL * 0.6 * (1 - (t - 100) / 200) });
+      t += r.range(16, 30); first = false;
+    }
+  }
+
+  // hệ số biên độ của một nốt nền tại thời điểm tg (giây từ đầu phiên)
+  function sleepLevel(n, tg, prog) {
+    var u = Math.max(0, Math.min(1, (tg - 110) / 90)), tr = SLEEP_TREND[n.group];
+    var db = tr[0] * u * u * (3 - 2 * u) + tr[1] * prog + Math.sin(TAU * tg / n.p1 + n.a1) + 0.6 * Math.sin(TAU * tg / n.p2 + n.a2);
+    return Math.pow(10, db / 20);
+  }
+
+  // tiếng mưa hoặc sóng vào dần từ phút thứ 8 đến phút thứ 12
+  function natureLevel(tg) { return Math.max(0, Math.min(1, (tg - 480) / 240)); }
+
+  function genSleep(K, s, ci, len, prog, spec, at) {
+    var ctx = K.ctx, g0 = ci * s.B, r = rng(s.seed + 7919 * (ci + 1)), t, i;
+    // nền và chuông giống hệt nhau ở hai chunk kế tiếp, nên chỗ nối trong một đoạn cần đường cong bù
+    var head = spec ? null : 'chunk', tail = at.last ? null : 'chunk';
+
+    // tiếng ồn trầm, đều, mỗi kênh một nguồn riêng
+    [-0.85, 0.85].forEach(function (pan) {
+      K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 480]], q: 0.5, g: [[0, 0.3]], dest: K.bus(pan, 1, 0) });
+    });
+
+    var drone = K.xgain(1, head, tail), out = drone;
+    drone.connect(K.bus(0, 1, 0.08));
+    if (ci === 0) {   // đầu phiên: nền vào dần trong khoảng 20 giây
+      out = ctx.createGain();
+      out.gain.setValueAtTime(0.15, 0);
+      out.gain.linearRampToValueAtTime(1, Math.min(22, len));
+      out.connect(drone);
+    }
+    var sides = [K.pan(-0.95, out), K.pan(0.95, out), out];
+    s.notes.forEach(function (n) {
+      var gs = [];
+      n.voices.forEach(function (v) {
+        var g = gs[v.side];
+        if (!g) {
+          g = gs[v.side] = ctx.createGain();
+          g.gain.setValueAtTime(sleepLevel(n, g0, prog), 0);
+          for (t = 6; t < len + 6; t += 6) g.gain.linearRampToValueAtTime(sleepLevel(n, g0 + Math.min(t, len), prog), Math.min(t, len));
+          g.connect(sides[v.side]);
+        }
+        var cyc = v.f * g0 + v.ph;
+        K.voice(v.f, cyc - Math.floor(cyc), v.amp, g);
+      });
+    });
+
+    var bellOut = K.xgain(1, head, tail);
+    bellOut.connect(K.bus(0, 0.3, 0.85));
+    var bells = [-0.45, -0.15, 0.15, 0.45].map(function (p) { return K.pan(p, bellOut); });
     for (i = 0; i < s.bells.length; i++) {
       var b = s.bells[i];
-      if (b.t >= g0 && b.t < g0 + len) note(b.t - g0, b.deg, b.vel * (1 - 0.6 * prog), b.tau, b.pan);
+      if (b.t >= g0 && b.t < g0 + len) K.bell(b.t - g0, mtof(s.root + 48 + b.semi), b.vel * (1 - 0.6 * prog), b.tau, bells[b.pan]);
     }
 
     var lv0 = natureLevel(g0), lv1 = natureLevel(g0 + len), calm = 1 - 0.35 * prog;
@@ -716,7 +846,7 @@
 
   function genEnd(K, s) { chime(K, s, 'end', 0.4); }
 
-  var GEN = { focus: genFocus, deep: genDeep, sleep: genCalm, rest: genCalm, end: genEnd, study: genStudy, solf: genSolf };
+  var GEN = { focus: genFocus, deep: genDeep, sleep: genSleep, rest: genCalm, end: genEnd, study: genStudy, solf: genSolf };
 
   /* ---------- phiên và render ---------- */
 
@@ -759,10 +889,10 @@
       // sleep và rest: không có nhịp nên hai đoạn kế nhau có thể phát chồng lên nhau để nối liền mạch
       var sleep = mode === 'sleep';
       s.calm = true; s.seamless = true;
-      s.root = r.pick(sleep ? [36, 38, 39, 41] : [41, 43, 45]);
+      s.root = r.pick(sleep ? [35, 36, 37, 38] : [41, 43, 45]);
       s.B = 84; s.X = 12; s.wet = 0.7; s.trim = sleep ? 1.0 : 1.2; s.finalFade = sleep ? 80 : 15;
       s.nature = sleep ? r.pick(['rain', 'waves']) : null;
-      s.bells = []; s.bellT = 2.5; s.rB = rng(seed ^ 0x2545F491);
+      if (sleep) sleepSetup(s, rng(seed ^ 0x2545F491));
     }
     return s;
   }

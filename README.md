@@ -6,7 +6,7 @@
 - **Deep Focus**: trầm, đều, ít biến động.
 - **Study**: nhịp lo-fi chậm với phím đàn ấm; cho lúc đọc và học. Cũng dùng được Pomodoro.
 - **Solfeggio**: chỉ một âm sin thuần, giữ đều, ở tần số tự chọn (174, 285, 396, 417, 528, 639, 741, 852 hoặc 963 Hz).
-- **Sleep**: mở đầu bằng chuông chậm, nền đều, sau vài phút có mưa hoặc sóng; có hẹn giờ tự tắt.
+- **Sleep**: mở đầu bằng một câu chuông chậm lặp lại trong khoảng một phút rưỡi, nền là một hợp âm đứng yên với tiếng ồn trầm, từ phút thứ 8 có mưa hoặc sóng; có hẹn giờ tự tắt.
 
 Mỗi lần phát là một bản mới. Nhạc được sinh bằng Web Audio (`OfflineAudioContext`) thành từng đoạn WAV rồi phát qua thẻ `<audio>`, nên vẫn chạy khi khoá màn hình điện thoại. Không dùng mẫu âm thanh hay thư viện ngoài.
 
