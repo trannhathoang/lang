@@ -685,8 +685,8 @@
     return Math.pow(10, db / 20);
   }
 
-  // tiếng mưa hoặc sóng vào dần từ phút thứ 8 đến phút thứ 12
-  function natureLevel(tg) { return Math.max(0, Math.min(1, (tg - 480) / 240)); }
+  // tiếng mưa hoặc sóng vào dần từ phút thứ 14 đến phút thứ 17
+  function natureLevel(tg) { return Math.max(0, Math.min(1, (tg - 840) / 180)); }
 
   function genSleep(K, s, ci, len, prog, spec, at) {
     var ctx = K.ctx, g0 = ci * s.B, r = rng(s.seed + 7919 * (ci + 1)), t, i;
