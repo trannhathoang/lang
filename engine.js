@@ -66,7 +66,10 @@
     return (noiseCache[kind] = out);
   }
 
-  var IR_CFG = { focus: [2.4, 0.55], deep: [3.2, 0.4], sleep: [4.2, 0.3], rest: [3.4, 0.4], end: [3.0, 0.45] };
+  var IR_CFG = {
+    focus: [2.4, 0.55], deep: [3.2, 0.4], sleep: [4.2, 0.3], rest: [3.4, 0.4], end: [3.0, 0.45],
+    study: [3.0, 0.35], solf: [3.8, 0.3]
+  };
   // đường cong vào/ra đẳng công suất cho các hợp âm chuyển tiếp nhau
   var EQ_IN = new Float32Array(33), EQ_OUT = new Float32Array(33);
   for (var q = 0; q < 33; q++) { EQ_IN[q] = Math.sin(Math.PI / 2 * q / 32); EQ_OUT[q] = Math.cos(Math.PI / 2 * q / 32); }
@@ -214,6 +217,19 @@
       auto(env.gain, [[t, 0], [t + o.a, o.peak], [Math.max(t + o.a, end - o.r), o.peak], [end, 0]]);
       os.connect(env); env.connect(o.dest); done(end + 0.1, env);
       os.start(t); os.stop(end + 0.05);
+    });
+
+    // Âm thuần giữ suốt chunk (Solfeggio). Chunk nào cũng phát âm này cùng pha, nên ở chỗ hai chunk
+    // hoà vào nhau phải nhân thêm một lần đường cong crossfade để tổng không đổi (sin² + cos² = 1);
+    // nếu không, âm sẽ phồng lên 3 dB ở mỗi mối nối.
+    K.tone = lazy(function (t, f, peak, head, tail, dest) {
+      var os = ctx.createOscillator(), env = ctx.createGain();
+      function curve(c) { var o = new Float32Array(c.length); for (var i = 0; i < c.length; i++) o[i] = c[i] * peak; return o; }
+      os.frequency.value = f;
+      if (head) env.gain.setValueCurveAtTime(curve(EQ_IN), 0, s.X); else env.gain.setValueAtTime(peak, 0);
+      if (tail) env.gain.setValueCurveAtTime(curve(EQ_OUT), len - s.X, s.X);
+      os.connect(env); env.connect(dest);
+      os.start(0);
     });
 
     function decay(node, t, a, peak, tau) {
@@ -487,13 +503,28 @@
   var CALM_CH = [[7, 12, 16, 19], [5, 9, 12, 17], [4, 9, 12, 16], [7, 12, 14, 19], [5, 12, 14, 21], [7, 11, 14, 16]];
   var RAIN_HISS = 0.1, RAIN_BODY = 0.4, RAIN_DROP = 0.09, WAVE_FLOOR = 0.25, WAVE_PEAK = 0.75;
 
-  function calmChord(s, i) {
+  function calmChord(s, i, table) {
+    table = table || CALM_CH;
     while (s.chords.length <= i) {
       var n = s.chords.length, c = 0;
-      if (n) do { c = s.rT.int(CALM_CH.length); } while (c === s.chords[n - 1]);
+      if (n) do { c = s.rT.int(table.length); } while (c === s.chords[n - 1]);
       s.chords.push(c);
     }
-    return CALM_CH[s.chords[i]];
+    return table[s.chords[i]];
+  }
+
+  // Các hợp âm nối tiếp nhau, mỗi hợp âm giữ D giây rồi chuyển sang hợp âm kế bằng crossfade đẳng
+  // công suất dài F giây. Không lệch tông giữa hai kênh nên mức âm không nhấp nhô.
+  // per: số hợp âm trong một chunk.
+  function calmPads(K, s, ci, len, table, per, F, o) {
+    var D = s.B / per, c0 = per * ci, i;
+    for (i = c0 - 1; (i - c0) * D < len; i++) {
+      if (i < 0) continue;
+      var t0 = (i - c0) * D, st = Math.max(0, t0);
+      K.pad(st, t0 + D + F - st, calmChord(s, i, table).map(function (n) { return s.root + 12 + n; }), {
+        type: 'triangle', det: 0, eq: true, a: t0 < 0 ? 0 : F, r: F, peak: o.peak, fc0: o.fc, fc1: o.fc, q: 0.5, dest: o.dest
+      });
+    }
   }
 
   // Chuông của Sleep theo thời gian tính từ đầu phiên: khoảng 100 giây đầu gõ chậm, đều,
@@ -517,7 +548,7 @@
   function natureLevel(tg) { return Math.max(0, Math.min(1, (tg - 240) / 180)); }
 
   function genCalm(K, s, ci, len, prog, spec) {
-    var sleep = s.mode === 'sleep', g0 = ci * s.B, D = s.B / 2, F = s.X;
+    var sleep = s.mode === 'sleep', g0 = ci * s.B;
     var r = rng(s.seed + 7919 * (ci + 1)), t, i;
     if (spec && spec.chime) chime(K, s, spec.chime, 1.2);
 
@@ -528,17 +559,10 @@
       K.sine(0, len + 1, mtof(s.root + p[0]), { a: 0.01, r: 0.01, peak: p[1], dest: holdBus });
     });
 
-    // hợp âm: mỗi hợp âm giữ D giây rồi chuyển sang hợp âm kế bằng crossfade đẳng công suất,
-    // không lệch tông giữa hai kênh, nên mức âm không nhấp nhô
-    var pad = [K.bus(-0.3, 0.6, 0.6), K.bus(0.3, 0.6, 0.6)], c0 = 2 * ci;
-    var fc = (sleep ? 700 : 1100) * (1 - 0.25 * prog);
-    for (i = c0 - 1; (i - c0) * D < len; i++) {
-      if (i < 0) continue;
-      var t0 = (i - c0) * D, st = Math.max(0, t0);
-      K.pad(st, t0 + D + F - st, calmChord(s, i).map(function (o) { return s.root + 12 + o; }), {
-        type: 'triangle', det: 0, eq: true, a: t0 < 0 ? 0 : F, r: F, peak: 0.075, fc0: fc, fc1: fc, q: 0.5, dest: pad
-      });
-    }
+    // hợp âm đổi mỗi 42 giây
+    calmPads(K, s, ci, len, CALM_CH, 2, s.X, {
+      peak: 0.075, fc: (sleep ? 700 : 1100) * (1 - 0.25 * prog), dest: [K.bus(-0.3, 0.6, 0.6), K.bus(0.3, 0.6, 0.6)]
+    });
 
     var bells = [K.bus(-0.35, 0.3, 0.85), K.bus(0, 0.3, 0.85), K.bus(0.35, 0.3, 0.85)];
     function note(t, deg, vel, tau, pan) {
@@ -590,13 +614,75 @@
     }
   }
 
+  /* ---------- Study: âm trầm ấm, thưa, dải tần hẹp, không nhịp ---------- */
+
+  // các bè phía trên nốt trì; nốt nào cũng nằm trong giọng trưởng của nốt trì
+  var STUDY_CH = [[4, 7, 11, 14], [5, 9, 12, 16], [4, 9, 12, 19], [2, 5, 9, 12], [7, 12, 14, 16], [5, 9, 14, 16]];
+
+  function genStudy(K, s, ci, len, prog, spec) {
+    var r = rng(s.seed + 7919 * (ci + 1)), t, i;
+    if (spec && spec.chime) chime(K, s, spec.chime, 1.2);
+
+    K.makeDelay(0.66, 0.3, 1400, 0.4);
+    K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 600]], q: 0.5, g: [[0, 0.09]], dest: K.bus(0, 1, 0.1) });
+    var holdBus = K.bus(0, 1, 0.15);
+    [[0, 0.04], [12, 0.04]].forEach(function (p) {
+      K.sine(0, len + 1, mtof(s.root + p[0]), { a: 0.01, r: 0.01, peak: p[1], dest: holdBus });
+    });
+
+    // hợp âm đổi mỗi 28 giây
+    calmPads(K, s, ci, len, STUDY_CH, 3, 8, { peak: 0.085, fc: 900, dest: [K.bus(-0.3, 0.6, 0.55), K.bus(0.3, 0.6, 0.55)] });
+
+    // piano điện gõ khẽ, từng câu một đến ba nốt, cách nhau xa
+    var ep = [K.bus(-0.25, 0.5, 0.55, 0.3), K.bus(0.25, 0.5, 0.55, 0.3)];
+    t = r.range(3, 8);
+    while (t < len) {
+      var n = 1 + r.int(3), deg = 1 + r.int(5), step = r.range(1.3, 2.1);
+      for (i = 0; i < n; i++) {
+        K.ep(t + i * step, mtof(s.root + 24 + MAJ_PENT[deg % 5] + 12 * Math.floor(deg / 5)), r.range(0.045, 0.07), r.range(1.2, 1.8), ep[r.int(2)]);
+        deg = Math.max(0, Math.min(5, deg + r.pick([-2, -1, -1, 1, 1, 2])));
+      }
+      t += (n - 1) * step + r.range(7, 14);
+    }
+  }
+
+  /* ---------- Solfeggio: một âm thuần giữ suốt, nền êm tựa vào âm đó ---------- */
+
+  var SOLF_HZ = [174, 285, 396, 417, 528, 639, 741, 852, 963];
+  // Pad không chứa nốt gốc: nốt gốc do âm thuần giữ, nên mức của nó không đổi khi hợp âm đổi.
+  var SOLF_CH = [[7, 16, 19], [5, 9, 17], [4, 9, 16], [7, 14, 19], [5, 14, 21], [9, 16, 19]];
+  var SOLF_BELL = [2, 4, 7, 9];
+
+  function genSolf(K, s, ci, len, prog, spec) {
+    var r = rng(s.seed + 7919 * (ci + 1)), t;
+    if (spec && spec.chime) chime(K, s, spec.chime, 1.2);
+
+    // âm thuần ở đúng tần số đã chọn, kèm một âm cùng tên ở quãng tám gần giọng nói cho dày hơn
+    var head = (!spec || !!spec.xin) && len >= s.X, tail = len >= s.X * (head ? 2 : 1) + 0.05;
+    var toneBus = K.bus(0, 1, 0.12);
+    K.tone(0, s.hz, s.amp, head, tail, toneBus);
+    if (s.body !== s.hz) K.tone(0, s.body, 0.045, head, tail, toneBus);
+
+    K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 600]], q: 0.5, g: [[0, 0.09]], dest: K.bus(0, 1, 0.1) });
+    calmPads(K, s, ci, len, SOLF_CH, 2, s.X, { peak: 0.06, fc: 850, dest: [K.bus(-0.3, 0.6, 0.6), K.bus(0.3, 0.6, 0.6)] });
+
+    // chuông thưa, tránh nốt gốc để không triệt pha với âm thuần
+    var bells = [K.bus(-0.35, 0.3, 0.85), K.bus(0, 0.3, 0.85), K.bus(0.35, 0.3, 0.85)];
+    t = r.range(8, 20);
+    while (t < len) {
+      K.bell(t, mtof(s.root + 24 + r.pick(SOLF_BELL)), r.range(0.04, 0.06), r.range(3.5, 5), bells[r.int(3)]);
+      t += r.range(18, 36);
+    }
+  }
+
   function genEnd(K, s) { chime(K, s, 'end', 0.4); }
 
-  var GEN = { focus: genFocus, deep: genDeep, sleep: genCalm, rest: genCalm, end: genEnd };
+  var GEN = { focus: genFocus, deep: genDeep, sleep: genCalm, rest: genCalm, end: genEnd, study: genStudy, solf: genSolf };
 
   /* ---------- phiên và render ---------- */
 
-  function newSession(mode, seed) {
+  // opts.hz: tần số của chế độ Solfeggio
+  function newSession(mode, seed, opts) {
     seed = (seed === undefined ? Math.floor(Math.random() * 0xFFFFFFFF) : seed) >>> 0;
     var r = rng(seed);
     var s = {
@@ -618,6 +704,18 @@
     } else if (mode === 'end') {
       s.root = r.pick([48, 50, 53]);
       s.B = 12; s.X = 2; s.wet = 0.7; s.trim = 1.0; s.finalFade = 3;
+    } else if (mode === 'study') {
+      s.calm = true; s.seamless = true;
+      s.root = r.pick([43, 45, 46, 48]);
+      s.B = 84; s.X = 12; s.wet = 0.6; s.trim = 1.25; s.finalFade = 25;
+    } else if (mode === 'solf') {
+      // B = 84 giây là bội của chu kỳ mọi âm thuần ở đây, nên chunk nào cũng bắt đầu đúng pha 0
+      s.calm = true; s.seamless = true;
+      s.hz = opts && SOLF_HZ.indexOf(opts.hz) >= 0 ? opts.hz : 528;
+      s.body = s.hz; while (s.body >= 370) s.body /= 2; while (s.body < 185) s.body *= 2;
+      s.root = 57 + 12 * Math.log(s.body / 440) / Math.LN2;   // pad lấy âm thuần làm nốt gốc
+      s.amp = Math.max(0.05, Math.min(0.11, 0.07 * Math.sqrt(528 / s.hz)));   // âm cao nghe to hơn nên cho nhỏ lại
+      s.B = 84; s.X = 12; s.wet = 0.6; s.trim = 1.15; s.finalFade = 25;
     } else {
       // sleep và rest: không có nhịp nên hai đoạn kế nhau có thể phát chồng lên nhau để nối liền mạch
       var sleep = mode === 'sleep';
@@ -754,5 +852,5 @@
     return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
   }
 
-  root.LangEngine = { SR: SR, newSession: newSession, renderPiece: renderPiece, pieceLen: pieceLen, silence: silence };
+  root.LangEngine = { SR: SR, SOLF_HZ: SOLF_HZ, newSession: newSession, renderPiece: renderPiece, pieceLen: pieceLen, silence: silence };
 })(window);

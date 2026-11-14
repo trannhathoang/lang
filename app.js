@@ -9,12 +9,16 @@
   var MODES = {
     focus: { name: 'Focus', desc: 'Nhịp nhẹ và sáng, cho việc thường ngày' },
     deep: { name: 'Deep Focus', desc: 'Trầm, đều, ít biến động, cho việc cần tập trung cao' },
+    study: { name: 'Study', desc: 'Ấm, thưa, không nhịp, cho lúc đọc và học' },
+    solf: { name: 'Solfeggio', desc: 'Một âm thuần giữ đều trên nền êm' },
     sleep: { name: 'Sleep', desc: 'Chuông chậm mở đầu, nền đều, rồi mưa hoặc sóng' },
     rest: { name: 'Nghỉ', desc: 'Rời mắt khỏi màn hình, thả lỏng một lát' },
     end: { name: 'Xong', desc: 'Đã hoàn thành các vòng tập trung' }
   };
   var STEPS = { focus: [5, 120, 5], rest: [1, 30, 1], rounds: [1, 12, 1] }; // [nhỏ nhất, lớn nhất, bước]
   var NORMAL_CHUNKS = 4;
+  var POMO_MODES = { focus: 1, study: 1 };   // các chế độ dùng được Pomodoro
+  var HZ = E.SOLF_HZ;
 
   var store = {
     get: function (k, d) {
@@ -28,6 +32,7 @@
     timers: store.get('timers', { focus: 0, deep: 0, sleep: 60 }),
     pomo: store.get('pomo', { on: false, focus: 25, rest: 5, rounds: 4 }),
     vol: store.get('vol', 1),
+    hz: store.get('hz', 528),   // tần số của chế độ Solfeggio
     active: false,       // đang có một phiên (kể cả khi tạm dừng)
     playing: false,
     starting: false,     // đã bấm phát, đang chờ đoạn đầu
@@ -42,6 +47,7 @@
     sess: null, prep: null, nextPrep: null, half: false, rate: 0.03, error: ''
   };
   if (!MODES[st.mode] || st.mode === 'rest' || st.mode === 'end') st.mode = 'focus';
+  if (HZ.indexOf(st.hz) < 0) st.hz = 528;
 
   var volOk = (function () { var a = document.createElement('audio'); a.volume = 0.5; return a.volume === 0.5; })();
   var silentUrl = E.silence(), unlocked = false, lastTouch = Date.now(), replanTimer = 0;
@@ -73,12 +79,13 @@
 
   /* ---------- các pha của một phiên ---------- */
 
-  // Bình thường phiên chỉ có một pha. Bật Pomodoro ở Focus thì thành chuỗi tập trung → nghỉ → … → chuông kết thúc.
+  // Bình thường phiên chỉ có một pha. Bật Pomodoro (ở Focus hoặc Study) thì thành chuỗi
+  // tập trung → nghỉ → … → chuông kết thúc.
   function buildPlan() {
     var ph = [], p = st.pomo, i;
-    if (st.mode === 'focus' && p.on) {
+    if (POMO_MODES[st.mode] && p.on) {
       for (i = 1; i <= p.rounds; i++) {
-        ph.push({ mode: 'focus', kind: 'focus', dur: p.focus * 60, round: i, chime: 'focus' });
+        ph.push({ mode: st.mode, kind: 'focus', dur: p.focus * 60, round: i, chime: 'focus' });
         if (i < p.rounds) ph.push({ mode: 'rest', kind: 'rest', dur: p.rest * 60, round: i, chime: 'rest' });
       }
       ph.push({ mode: 'end', kind: 'end', dur: 12 });
@@ -91,7 +98,7 @@
 
   // render sẵn đoạn mở đầu của một pha
   function prepPhase(ph, pi) {
-    var sess = E.newSession(ph.mode), L1 = E.pieceLen(sess, 1);
+    var sess = E.newSession(ph.mode, undefined, { hz: st.hz }), L1 = E.pieceLen(sess, 1);
     var spec = ph.dur <= L1 + 30 ? { final: ph.dur } : { chunks: 1 };
     spec.chime = ph.chime || null;
     spec.fadeIn = ph.kind === 'end' ? 0.3 : ph.chime ? 1.0 : 2.5;
@@ -297,6 +304,11 @@
     replan();
   }
 
+  function setHz(hz) {
+    st.hz = hz; store.set('hz', hz);
+    setMode(st.mode, true);
+  }
+
   function setPomo(key, val) {
     st.pomo[key] = val; store.set('pomo', st.pomo);
     ui();
@@ -456,11 +468,13 @@
   }
 
   function ui() {
-    var shown = shownMode(), pomoMode = st.mode === 'focus', i, b;
+    var shown = shownMode(), pomoMode = !!POMO_MODES[st.mode], i, b;
     body.classList.toggle('playing', st.active && st.playing);
     body.classList.toggle('loading', st.starting);
     $('modeName').textContent = st.active && st.phases[st.pi].kind === 'focus' ? 'Tập trung' : MODES[shown].name;
     $('desc').textContent = MODES[shown].desc;
+    $('hz').hidden = st.mode !== 'solf';
+    $('hzOut').textContent = st.hz + ' Hz';
     b = $('modes').children;
     for (i = 0; i < b.length; i++) b[i].setAttribute('aria-pressed', b[i].dataset.mode === st.mode);
     b = $('timers').children;
@@ -482,6 +496,10 @@
   $('timers').addEventListener('click', function (e) { var m = e.target.dataset.min; if (m !== undefined) setTimer(+m); });
   $('regen').addEventListener('click', function () { setMode(st.mode, true); });
   $('pomo').addEventListener('click', function () { setPomo('on', !st.pomo.on); });
+  $('hz').addEventListener('click', function (e) {
+    var d = +e.target.dataset.d;
+    if (d) setHz(HZ[(HZ.indexOf(st.hz) + d + HZ.length) % HZ.length]);
+  });
   $('pomoBlock').addEventListener('click', function (e) {
     var d = e.target.dataset.d, step = e.target.closest && e.target.closest('.step');
     if (!d || !step) return;
@@ -512,6 +530,8 @@
   var PAL = {
     focus: { top: [9, 38, 42], bot: [3, 10, 16], hues: [168, 192, 150, 208] },
     deep: { top: [22, 17, 54], bot: [5, 4, 17], hues: [255, 282, 232, 305] },
+    study: { top: [40, 24, 16], bot: [12, 6, 5], hues: [22, 40, 8, 54] },
+    solf: { top: [10, 30, 22], bot: [3, 9, 8], hues: [128, 150, 100, 172] },
     sleep: { top: [12, 16, 40], bot: [2, 3, 10], hues: [28, 44, 12, 348] },
     rest: { top: [36, 30, 14], bot: [10, 8, 4], hues: [48, 80, 30, 110] }
   };

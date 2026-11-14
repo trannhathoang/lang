@@ -56,8 +56,10 @@
   #status { margin: 14px 0 0; min-height: 20px; font-size: 15px; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
 
   footer { display: flex; flex-direction: column; gap: 14px; }
-  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .seg { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+  .seg button:nth-child(n+4) { grid-column: span 3; }
   .seg button {
+    grid-column: span 2;
     padding: 13px 4px; border-radius: 16px; background: var(--fill); border: 1px solid var(--line);
     font-size: 15px; transition: background .25s, border-color .25s;
   }
@@ -82,6 +84,10 @@
   #regen, #pomo { padding: 10px 16px; border-radius: 999px; background: var(--fill); border: 1px solid var(--line); font-size: 14px; white-space: nowrap; transition: background .25s, border-color .25s; }
   #regen:active { background: rgba(255,255,255,.18); }
   #pomo[aria-pressed="true"] { background: rgba(255,255,255,.2); border-color: rgba(255,255,255,.42); }
+  #hz { display: flex; align-items: center; border-radius: 999px; background: var(--fill); border: 1px solid var(--line); font-size: 14px; white-space: nowrap; }
+  #hz button { width: 38px; height: 38px; border-radius: 50%; font-size: 20px; line-height: 1; }
+  #hz button:active { background: rgba(255,255,255,.18); }
+  #hz output { min-width: 58px; text-align: center; font-variant-numeric: tabular-nums; }
   #volWrap { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; color: var(--mute); }
   #vol { flex: 1; min-width: 0; accent-color: #fff; height: 28px; }
   #volWrap svg { flex: none; }
@@ -98,6 +104,7 @@
   #sheet ul { margin: 0 0 16px; padding-left: 20px; color: rgba(255,255,255,.8); }
   #sheet li { margin-bottom: 6px; }
   #sheetClose { width: 100%; padding: 13px; border-radius: 14px; background: rgba(255,255,255,.14); }
+  @media (max-height: 720px) { #orb { width: min(58vw, 30vh, 300px); } }
   @media (max-height: 620px) { h1 { font-size: 24px; } #desc { display: none; } footer { gap: 10px; } }
 </style>
 </head>
@@ -126,6 +133,8 @@
     <div class="seg" id="modes">
       <button data-mode="focus">Focus</button>
       <button data-mode="deep">Deep Focus</button>
+      <button data-mode="study">Study</button>
+      <button data-mode="solf">Solfeggio</button>
       <button data-mode="sleep">Sleep</button>
     </div>
     <div class="block" id="timerBlock">
@@ -156,6 +165,7 @@
     <div class="row">
       <button id="regen">↻ Bản mới</button>
       <button id="pomo" aria-pressed="false" hidden>Pomodoro</button>
+      <div id="hz" hidden><button data-d="-1" aria-label="Tần số thấp hơn">‹</button><output id="hzOut">528 Hz</output><button data-d="1" aria-label="Tần số cao hơn">›</button></div>
       <label id="volWrap" hidden><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18V6L7.5 9.5H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg><input id="vol" type="range" min="0" max="1" step="0.01" value="1" aria-label="Âm lượng"></label>
     </div>
   </footer>
@@ -171,7 +181,8 @@
       <li><b>iPhone:</b> mở bằng Safari, bấm Chia sẻ → “Thêm vào Màn hình chính” để dùng như một app.</li>
       <li>Chỉnh âm lượng bằng nút cứng của máy. Phát và dừng được từ màn hình khoá.</li>
       <li>Hẹn giờ: nhạc nhỏ dần rồi tự tắt khi hết giờ.</li>
-      <li>Pomodoro (ở Focus): chọn số phút tập trung, số phút nghỉ và số vòng. Chuông báo mỗi lần đổi pha; lúc nghỉ nhạc chuyển sang nền êm.</li>
+      <li>Solfeggio: bấm ‹ › để chọn một trong chín tần số, từ 174 đến 963 Hz. Hai tần số thấp nhất nên nghe bằng tai nghe.</li>
+      <li>Pomodoro (ở Focus và Study): chọn số phút tập trung, số phút nghỉ và số vòng. Chuông báo mỗi lần đổi pha; lúc nghỉ nhạc chuyển sang nền êm.</li>
       <li>Ở chế độ Sleep, màn hình tự tối sau 20 giây; chạm để hiện lại.</li>
     </ul>
     <button id="sheetClose">Đóng</button>
