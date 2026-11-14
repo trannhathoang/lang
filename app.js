@@ -7,10 +7,10 @@
   var els = [$('p0'), $('p1')], body = document.body;
 
   var MODES = {
-    focus: { name: 'Focus', desc: 'Nhịp nhẹ và sáng, cho việc thường ngày' },
+    focus: { name: 'Focus', desc: 'Trầm và ấm, nhịp đập chậm, đều' },
     deep: { name: 'Deep Focus', desc: 'Trầm, đều, ít biến động, cho việc cần tập trung cao' },
-    study: { name: 'Study', desc: 'Ấm, thưa, không nhịp, cho lúc đọc và học' },
-    solf: { name: 'Solfeggio', desc: 'Một âm thuần giữ đều trên nền êm' },
+    study: { name: 'Study', desc: 'Nhịp lo-fi chậm, phím đàn ấm, cho lúc đọc và học' },
+    solf: { name: 'Solfeggio', desc: 'Một âm thuần duy nhất, giữ đều' },
     sleep: { name: 'Sleep', desc: 'Chuông chậm mở đầu, nền đều, rồi mưa hoặc sóng' },
     rest: { name: 'Nghỉ', desc: 'Rời mắt khỏi màn hình, thả lỏng một lát' },
     end: { name: 'Xong', desc: 'Đã hoàn thành các vòng tập trung' }
@@ -101,6 +101,7 @@
     var sess = E.newSession(ph.mode, undefined, { hz: st.hz }), L1 = E.pieceLen(sess, 1);
     var spec = ph.dur <= L1 + 30 ? { final: ph.dur } : { chunks: 1 };
     spec.chime = ph.chime || null;
+    spec.xout = !!sess.seamless && st.overlapOk;
     spec.fadeIn = ph.kind === 'end' ? 0.3 : ph.chime ? 1.0 : 2.5;
     if (ph.mode === 'sleep' && ph.dur !== Infinity) spec.prog = [0, Math.min(1, L1 / ph.dur)];
     var prep = { ph: ph, pi: pi, sess: sess, cancelled: false, phases: null, promise: null };
@@ -345,6 +346,7 @@
     } else return;
 
     spec.xin = ov > 0 && !spec.immediate;
+    spec.xout = ov > 0;
     spec.fadeIn = spec.immediate ? 2.5 : 4;
     var len = spec.final || L, lead = spec.immediate ? 0 : tb;
     spec.prog = [progAt(lead), progAt(lead + len)];

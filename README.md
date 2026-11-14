@@ -2,10 +2,10 @@
 
 Âm thanh nền tự sinh để tập trung và ngủ, chạy hoàn toàn trên trình duyệt.
 
-- **Focus**: nhịp nhẹ và sáng, cho việc thường ngày. Có Pomodoro: chọn số phút tập trung, số phút nghỉ và số vòng; chuông báo mỗi lần đổi pha.
+- **Focus**: hợp âm ngân trầm và ấm, nhịp đập đều mỗi giây. Có Pomodoro: chọn số phút tập trung, số phút nghỉ và số vòng; chuông báo mỗi lần đổi pha.
 - **Deep Focus**: trầm, đều, ít biến động.
-- **Study**: ấm, thưa, không nhịp, dải tần hẹp; cho lúc đọc và học. Cũng dùng được Pomodoro.
-- **Solfeggio**: một âm thuần giữ đều ở tần số tự chọn (174, 285, 396, 417, 528, 639, 741, 852 hoặc 963 Hz) trên nền pad êm.
+- **Study**: nhịp lo-fi chậm với phím đàn ấm; cho lúc đọc và học. Cũng dùng được Pomodoro.
+- **Solfeggio**: chỉ một âm sin thuần, giữ đều, ở tần số tự chọn (174, 285, 396, 417, 528, 639, 741, 852 hoặc 963 Hz).
 - **Sleep**: mở đầu bằng chuông chậm, nền đều, sau vài phút có mưa hoặc sóng; có hẹn giờ tự tắt.
 
 Mỗi lần phát là một bản mới. Nhạc được sinh bằng Web Audio (`OfflineAudioContext`) thành từng đoạn WAV rồi phát qua thẻ `<audio>`, nên vẫn chạy khi khoá màn hình điện thoại. Không dùng mẫu âm thanh hay thư viện ngoài.

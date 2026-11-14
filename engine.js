@@ -67,8 +67,8 @@
   }
 
   var IR_CFG = {
-    focus: [2.4, 0.55], deep: [3.2, 0.4], sleep: [4.2, 0.3], rest: [3.4, 0.4], end: [3.0, 0.45],
-    study: [3.0, 0.35], solf: [3.8, 0.3]
+    focus: [3.4, 0.3], deep: [3.2, 0.4], sleep: [4.2, 0.3], rest: [3.4, 0.4], end: [3.0, 0.45],
+    study: [2.2, 0.4], solf: [1.0, 0.3]
   };
   // đường cong vào/ra đẳng công suất cho các hợp âm chuyển tiếp nhau
   var EQ_IN = new Float32Array(33), EQ_OUT = new Float32Array(33);
@@ -222,14 +222,43 @@
     // Âm thuần giữ suốt chunk (Solfeggio). Chunk nào cũng phát âm này cùng pha, nên ở chỗ hai chunk
     // hoà vào nhau phải nhân thêm một lần đường cong crossfade để tổng không đổi (sin² + cos² = 1);
     // nếu không, âm sẽ phồng lên 3 dB ở mỗi mối nối.
+    // head, tail: null | 'chunk' (nối hai chunk trong một đoạn) | 'piece' (nối hai đoạn phát ở hai
+    // thẻ <audio>, không cùng pha: chuyển nhanh trong 2 giây ở giữa vùng chồng để nếu hai âm có
+    // triệt nhau thì cũng chỉ thoáng qua).
     K.tone = lazy(function (t, f, peak, head, tail, dest) {
-      var os = ctx.createOscillator(), env = ctx.createGain();
-      function curve(c) { var o = new Float32Array(c.length); for (var i = 0; i < c.length; i++) o[i] = c[i] * peak; return o; }
+      var os = ctx.createOscillator(), env = ctx.createGain(), n = 129, HALF = Math.PI / 2;
+      function curve(kind, out) {
+        var c = new Float32Array(n);
+        for (var i = 0; i < n; i++) {
+          var u = i / (n - 1), x = out ? Math.cos(HALF * u) : Math.sin(HALF * u), g = x;   // x: hệ số crossfade mà engine sẽ nhân vào
+          if (kind === 'piece') {
+            var v = Math.max(0, Math.min(1, (u * 12 - 5) / 2)), w = Math.sin(HALF * v);
+            g = (out ? 1 - w * w : w * w) / Math.max(x, 0.2);
+          }
+          c[i] = g * peak;
+        }
+        return c;
+      }
       os.frequency.value = f;
-      if (head) env.gain.setValueCurveAtTime(curve(EQ_IN), 0, s.X); else env.gain.setValueAtTime(peak, 0);
-      if (tail) env.gain.setValueCurveAtTime(curve(EQ_OUT), len - s.X, s.X);
+      if (head) env.gain.setValueCurveAtTime(curve(head, false), 0, s.X); else env.gain.setValueAtTime(peak, 0);
+      if (tail) env.gain.setValueCurveAtTime(curve(tail, true), len - s.X, s.X);
       os.connect(env); env.connect(dest);
       os.start(0);
+    });
+
+    // phím đàn ấm (Study): một dao động tam giác ở giữa, hai răng cưa lệch tông hai bên, bộ lọc khép dần
+    K.key = lazy(function (t, f, vel, tau, dest) {
+      var lp = biquad('lowpass', 0.7), g = ctx.createGain(), stop = t + 0.02 + tau * 6;
+      lp.frequency.setValueAtTime(Math.min(5000, f * 6), t);
+      lp.frequency.setTargetAtTime(f * 3, t, 0.25);
+      decay(g, t, 0.006, vel, tau);
+      lp.connect(g); g.connect(dest); done(stop + 0.05, g);
+      [[0, 'triangle', 0.7], [-13, 'sawtooth', 0.3], [11, 'sawtooth', 0.3]].forEach(function (v) {
+        var os = ctx.createOscillator(), a = gain(v[2]);
+        os.type = v[1]; os.frequency.value = f; os.detune.value = v[0];
+        os.connect(a); a.connect(lp);
+        os.start(t); os.stop(stop);
+      });
     });
 
     function decay(node, t, a, peak, tau) {
@@ -295,22 +324,23 @@
       o1.start(t); o2.start(t); o1.stop(t + 1.2); o2.stop(t + 1.2); done(t + 1.25, g);
     });
 
-    K.thump = lazy(function (t, vel, dest) {
+    // trống trầm: âm sin trượt nhanh từ f0 xuống f1
+    K.kick = lazy(function (t, vel, f0, f1, tau, dest) {
       var os = ctx.createOscillator(), g = ctx.createGain();
-      os.frequency.setValueAtTime(120, t);
-      os.frequency.exponentialRampToValueAtTime(50, t + 0.09);
-      decay(g, t, 0.005, vel, 0.07);
+      os.frequency.setValueAtTime(f0, t);
+      os.frequency.exponentialRampToValueAtTime(f1, t + 0.09);
+      decay(g, t, 0.005, vel, tau);
       os.connect(g); g.connect(dest);
-      os.start(t); os.stop(t + 0.6); done(t + 0.65, g);
+      os.start(t); os.stop(t + tau * 8 + 0.05); done(t + tau * 8 + 0.1, g);
     });
 
-    K.tick = lazy(function (t, vel, dest) {
+    K.tick = lazy(function (t, vel, f, dest) {
       var src = ctx.createBufferSource(); src.buffer = noiseBuf('white');
-      var bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 5200; bp.Q.value = 1.2;
+      var bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = 0.8;
       var g = ctx.createGain();
-      decay(g, t, 0.001, vel, 0.012);
+      decay(g, t, 0.001, vel, 0.014);
       src.connect(bp); bp.connect(g); g.connect(dest);
-      src.start(t, K.r.f() * 2.5, 0.12); done(t + 0.2, g);
+      src.start(t, K.r.f() * 2.5, 0.14); done(t + 0.22, g);
     });
 
     // một giọt mưa: tiếng lách tách rất ngắn
@@ -326,15 +356,17 @@
     return K;
   }
 
-  /* ---------- Focus ---------- */
+  /* ---------- Focus: hợp âm ngân dài, trầm và tối, nhịp đập đều mỗi giây ---------- */
 
+  // Nốt trầm luôn là nốt gốc; chỉ các bè phía trên đổi, mỗi 8 ô nhịp một lần.
+  // pad: các bè ngân; mid: ba bè giữa được làm dày thêm; low: nốt cho những tiếng ngân dài nổi lên rồi lặn xuống.
   var FOCUS_CH = {
-    I:  { bass: 0,  pad: [0, 7, 14, 16],      arp: [0, 2, 4, 7, 9, 12],    next: ['vi', 'IV', 'V', 'IV'] },
-    vi: { bass: -3, pad: [-3, 7, 12, 16],     arp: [-3, 0, 4, 7, 9, 12],   next: ['IV', 'I', 'ii'] },
-    IV: { bass: -7, pad: [-7, 5, 9, 12, 16],  arp: [0, 5, 7, 9, 12, 16],   next: ['I', 'V', 'vi'] },
-    V:  { bass: -5, pad: [-5, 2, 7, 12, 14],  arp: [-5, 0, 2, 7, 9, 14],   next: ['I', 'vi', 'IV'] },
-    ii: { bass: 2,  pad: [2, 9, 12, 17],      arp: [2, 5, 9, 12, 14, 17],  next: ['V', 'IV'] }
+    IV: { pad: [5, 9, 12, 17, 21, 24], mid: [12, 17, 21], low: 5, next: ['I', 'vi', 'IV'] },
+    I:  { pad: [7, 12, 16, 19, 24],    mid: [12, 16, 19], low: 7, next: ['IV', 'vi', 'IV'] },
+    vi: { pad: [4, 9, 12, 16, 21, 24], mid: [12, 16, 21], low: 9, next: ['IV', 'I'] }
   };
+  var FOCUS_ACC = [1, 0.7, 0.85, 0.7];
+  var FOCUS_HI = [33, 36, 38, 40, 43];
   var DEEP_CH = {
     i:   { bass: 0,  pad: [0, 7, 14, 15],   next: ['VI', 'iv', 'VII', 'i', 'VI'] },
     VI:  { bass: -4, pad: [-4, 8, 12, 15],  next: ['i', 'VII', 'iv'] },
@@ -351,21 +383,6 @@
     return table[s.chords[i]];
   }
 
-  function patternAt(s, i) {
-    var r = s.rP;
-    function step(k) { return { on: k === 0 || r.chance(0.62), idx: r.int(6), oct: r.chance(0.2) ? 1 : 0 }; }
-    while (s.patterns.length <= i) {
-      var p = [], k, n = s.patterns.length;
-      if (!n) for (k = 0; k < 8; k++) p.push(step(k));
-      else {
-        p = s.patterns[n - 1].slice();
-        for (k = 0; k < 2; k++) { var j = r.int(8); p[j] = step(j); }
-      }
-      s.patterns.push(p);
-    }
-    return s.patterns[i];
-  }
-
   // chuông báo chuyển pha Pomodoro: vào tập trung (đi lên), vào nghỉ (đi xuống), kết thúc buổi
   var CHIMES = {
     focus: [[7, 0], [12, 0.42]],
@@ -379,66 +396,69 @@
   }
 
   function genFocus(K, s, ci, len, prog, spec) {
-    var beat = 60 / s.bpm, bar = beat * 4, st = beat / 2;
+    var beat = 60 / s.bpm, bar = beat * 4, half = beat / 2;
     var bar0 = ci * s.chunkBars, nBars = Math.ceil(len / bar), g0 = bar0 * bar;
-    var r = rng(s.seed + 7919 * (ci + 1));
-    var ctx = K.ctx, b, k;
+    var r = rng(s.seed + 7919 * (ci + 1)), b, k, t;
+    function chordOf(t) { return chordAt(s, FOCUS_CH, 'IV', (bar0 + Math.floor(t / bar)) >> 3); }
     if (spec && spec.chime) chime(K, s, spec.chime, 1.2);
 
-    K.makeDelay(beat * 0.75, 0.38, 2200, 0.5);
+    K.makeDelay(beat * 0.375, 0.4, 1100, 0.5);
 
-    [-0.45, 0.45].forEach(function (pan) {
-      K.noise(0, len, { kind: 'pink', ftype: 'bandpass', f: [[0, 2600]], q: 0.4, g: [[0, 0.022]], dest: K.bus(pan, 1, 0.3) });
-    });
-
-    // pad "thở" theo nhịp
-    var padL = K.gain(1), padR = K.gain(1);
-    padL.connect(K.bus(-0.35, 0.7, 0.45)); padR.connect(K.bus(0.35, 0.7, 0.45));
-    var lfo = ctx.createOscillator(), lg = K.gain(0.13);
-    lfo.frequency.value = 1 / beat;
-    lfo.connect(lg); lg.connect(padL.gain); lg.connect(padR.gain);
-    lfo.start(beat * 0.25);
-
-    var plk = [K.bus(-0.3, 0.55, 0.3, 0.32), K.bus(0.3, 0.55, 0.3, 0.32)];
-    var bassBus = K.bus(0, 1, 0.08), thBus = K.bus(0, 1, 0.03);
-    var tickBus = [K.bus(-0.45, 1, 0.2), K.bus(0.45, 1, 0.2)];
+    var pad = [K.bus(-0.95, 0.7, 0.5), K.bus(0.95, 0.7, 0.5)];
+    var pulseBus = [K.bus(-0.3, 1, 0.1, 0.4), K.bus(0.3, 1, 0.1, 0.4)], subBus = K.bus(0, 1, 0.05), kickBus = K.bus(0, 1, 0.03);
+    var soft = [K.bus(-0.7, 0.6, 0.5, 0.3), K.bus(0.7, 0.6, 0.5, 0.3)];
+    var swell = [K.bus(-0.5, 0.6, 0.6), K.bus(0.5, 0.6, 0.6)];
+    var high = [K.bus(-0.6, 0.35, 0.8, 0.3), K.bus(0.6, 0.35, 0.8, 0.3)];
 
     for (b = 0; b < nBars; b++) {
       var gb = bar0 + b, t0 = b * bar, tg = g0 + t0;
-      var ch = chordAt(s, FOCUS_CH, 'I', gb >> 2);
-      var bright = 0.5 + 0.5 * Math.sin(TAU * tg / s.per2 + s.ph2);
-      var arpLv = 0.5 + 0.5 * Math.sin(TAU * tg / s.per1 + s.ph1);
+      var ch = chordAt(s, FOCUS_CH, 'IV', gb >> 3);
+      var m1 = 0.5 + 0.5 * Math.sin(TAU * tg / s.per1 + s.ph1);
+      var m2 = 0.5 + 0.5 * Math.sin(TAU * tg / s.per2 + s.ph2);
+      var rb = rng(s.seed + 104729 * (gb + 1));   // ngẫu nhiên theo ô nhịp của cả phiên, để hai chunk chồng nhau khớp nhau
 
-      if ((gb & 3) === 0) {
-        K.pad(t0, bar * 4.8, ch.pad.map(function (o) { return s.root + o; }), {
-          type: 'sawtooth', det: 7, a: 1.6, r: bar * 1.2, peak: 0.2,
-          fc0: 650 + 550 * bright, fc1: 1000 + 1000 * bright, q: 0.6, dest: [padL, padR]
+      if ((gb & 7) === 0) {
+        K.pad(t0, bar * 9.5, ch.pad.map(function (o) { return s.root + o; }), {
+          type: 'sawtooth', det: 14, a: 5, r: bar * 2, peak: 0.2,
+          fc0: 340 + 140 * m2, fc1: 460 + 280 * m2, q: 0.6, dest: pad
         });
-      }
-
-      var bm = s.root - 12 + ch.bass; while (bm < 38) bm += 12;
-      K.bass(t0, mtof(bm), 0.15, 0.7, bassBus);
-      if (r.chance(0.45)) K.bass(t0 + st * 5, mtof(bm), 0.09, 0.4, bassBus);
-
-      for (k = 0; k < 4; k++) K.thump(t0 + k * beat, k % 2 ? 0.07 : 0.1, thBus);
-
-      if (s.ticks) {
-        for (k = 0; k < 8; k++) {
-          if (r.chance(k % 2 ? 0.8 : 0.1)) K.tick(t0 + k * st + r.range(0, 0.004), r.range(0.3, 1) * 0.035, tickBus[(k >> 1) & 1]);
-        }
-      }
-
-      var pat = patternAt(s, gb >> 3);
-      for (k = 0; k < 8; k++) {
-        var p = pat[k];
-        if (!p.on) continue;
-        if (arpLv < 0.25 && k % 2 && r.chance(0.5)) continue;
-        var m = s.root + 24 + ch.arp[p.idx] + 12 * p.oct; while (m > 86) m -= 12;
-        var acc = k === 0 ? 1 : k % 2 === 0 ? 0.8 : 0.6;
-        K.pluck(t0 + k * st + r.range(0, 0.006), mtof(m), acc * r.range(0.8, 1) * (0.35 + 0.65 * arpLv) * 0.36, {
-          tau: 0.16 + 0.1 * bright, bright: 0.4 + 0.6 * bright, dest: plk[k & 1]
+        // lớp giữa tròn tiếng hơn, cho phần 250–500 Hz dày lên mà không thêm bồi âm cao
+        K.pad(t0, bar * 9.5, ch.mid.map(function (o) { return s.root + o; }), {
+          type: 'triangle', det: 9, a: 5, r: bar * 2, peak: 0.17, fc0: 900, fc1: 900, q: 0.5, dest: pad
         });
+        K.sine(t0, bar * 9, mtof(s.root), { a: 4, r: bar * 1.5, peak: 0.07, dest: subBus });
+        K.sine(t0, bar * 9, mtof(s.root - 12), { a: 4, r: bar * 1.5, peak: 0.05, dest: subBus });
       }
+
+      for (k = 0; k < 4; k++) {
+        var tb = t0 + k * beat;
+        K.pulse(tb, mtof(s.root), FOCUS_ACC[k] * 0.34, 400 + 700 * m1, pulseBus[k & 1]);
+        K.kick(tb, FOCUS_ACC[k] * 0.1, 120, 50, 0.07, kickBus);
+        // nốt đệm khẽ ở nửa sau của phách
+        if (rb.chance(0.5)) K.ep(tb + half, mtof(s.root + rb.pick(ch.pad)), rb.range(0.04, 0.07), rb.range(0.5, 0.8), soft[rb.int(2)]);
+      }
+    }
+
+    // thỉnh thoảng một nốt trầm ngân dài nổi lên rồi lặn xuống
+    t = r.range(6, 14);
+    while (t < len) {
+      var ts = Math.round(t / beat) * beat;
+      K.sine(ts, r.range(2.2, 3.2), mtof(s.root + chordOf(ts).low + (r.chance(0.5) ? 12 : 0)), {
+        a: 0.5, r: 1.2, peak: r.range(0.05, 0.08), dest: swell[r.int(2)]
+      });
+      t += r.range(7, 13);
+    }
+
+    // vài nốt cao, khẽ, thành từng câu ngắn cách xa nhau
+    t = r.range(10, 24);
+    while (t < len) {
+      var n = 2 + r.int(3), th = Math.round(t / half) * half, idx = r.int(FOCUS_HI.length);
+      for (k = 0; k < n; k++) {
+        K.sine(th, 1.6, mtof(s.root + FOCUS_HI[idx]), { a: 0.008, r: 1.55, peak: r.range(0.1, 0.15), dest: high[r.int(2)] });
+        th += half * (1 + r.int(2));
+        idx = Math.max(0, Math.min(FOCUS_HI.length - 1, idx + r.pick([-1, -1, 1, 1, 2])));
+      }
+      t += r.range(5, 11);
     }
   }
 
@@ -614,65 +634,84 @@
     }
   }
 
-  /* ---------- Study: âm trầm ấm, thưa, dải tần hẹp, không nhịp ---------- */
+  /* ---------- Study: nhịp lo-fi chậm, phím đàn ấm hơi lệch tông ---------- */
 
-  // các bè phía trên nốt trì; nốt nào cũng nằm trong giọng trưởng của nốt trì
-  var STUDY_CH = [[4, 7, 11, 14], [5, 9, 12, 16], [4, 9, 12, 19], [2, 5, 9, 12], [7, 12, 14, 16], [5, 9, 14, 16]];
+  // hợp âm bảy trong giọng thứ tự nhiên, tính từ nốt gốc; mỗi ô nhịp một hợp âm
+  var STUDY_CH = {
+    i:   { bass: 0, keys: [7, 10, 12, 15], next: ['iv', 'VI', 'v', 'III'] },
+    iv:  { bass: 5, keys: [5, 8, 12, 15],  next: ['i', 'v', 'VI'] },
+    v:   { bass: 7, keys: [7, 10, 14, 17], next: ['i', 'VI', 'iv'] },
+    VI:  { bass: 8, keys: [8, 12, 15, 19], next: ['i', 'iv', 'III'] },
+    III: { bass: 3, keys: [7, 10, 14, 15], next: ['VI', 'iv', 'i'] }
+  };
+  // trống trầm: các bước (nốt móc kép) có tiếng trống trong một vòng hai ô nhịp
+  var STUDY_KICK = [[0, 10, 16, 22, 26], [0, 7, 10, 16, 26], [0, 6, 16, 19, 24, 26], [0, 10, 14, 16, 26]];
+  var STUDY_HAT = [0.55, 0.12, 1, 0.6];
+  var MIN_PENT2 = [0, 3, 5, 7, 10, 12, 15];
 
   function genStudy(K, s, ci, len, prog, spec) {
-    var r = rng(s.seed + 7919 * (ci + 1)), t, i;
+    var beat = 60 / s.bpm, bar = beat * 4, st = beat / 4;
+    var bar0 = ci * s.chunkBars, nBars = Math.ceil(len / bar);
+    var b, k, r;
     if (spec && spec.chime) chime(K, s, spec.chime, 1.2);
 
-    K.makeDelay(0.66, 0.3, 1400, 0.4);
-    K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 600]], q: 0.5, g: [[0, 0.09]], dest: K.bus(0, 1, 0.1) });
-    var holdBus = K.bus(0, 1, 0.15);
-    [[0, 0.04], [12, 0.04]].forEach(function (p) {
-      K.sine(0, len + 1, mtof(s.root + p[0]), { a: 0.01, r: 0.01, peak: p[1], dest: holdBus });
-    });
+    K.makeDelay(beat * 0.75, 0.25, 1600, 0.35);
 
-    // hợp âm đổi mỗi 28 giây
-    calmPads(K, s, ci, len, STUDY_CH, 3, 8, { peak: 0.085, fc: 900, dest: [K.bus(-0.3, 0.6, 0.55), K.bus(0.3, 0.6, 0.55)] });
+    var keys = [K.bus(-0.6, 0.7, 0.35, 0.18), K.bus(0.6, 0.7, 0.35, 0.18)];
+    var pad = [K.bus(-0.9, 0.7, 0.4), K.bus(0.9, 0.7, 0.4)];
+    var lowBus = K.bus(0, 1, 0.1), kickBus = K.bus(0, 1, 0.04);
+    var hat = [K.bus(-0.5, 1, 0.12), K.bus(0.5, 1, 0.12)];
+    var kicks = STUDY_KICK[s.kick];
 
-    // piano điện gõ khẽ, từng câu một đến ba nốt, cách nhau xa
-    var ep = [K.bus(-0.25, 0.5, 0.55, 0.3), K.bus(0.25, 0.5, 0.55, 0.3)];
-    t = r.range(3, 8);
-    while (t < len) {
-      var n = 1 + r.int(3), deg = 1 + r.int(5), step = r.range(1.3, 2.1);
-      for (i = 0; i < n; i++) {
-        K.ep(t + i * step, mtof(s.root + 24 + MAJ_PENT[deg % 5] + 12 * Math.floor(deg / 5)), r.range(0.045, 0.07), r.range(1.2, 1.8), ep[r.int(2)]);
-        deg = Math.max(0, Math.min(5, deg + r.pick([-2, -1, -1, 1, 1, 2])));
+    for (b = 0; b < nBars; b++) {
+      var gb = bar0 + b, t0 = b * bar, base = (gb & 1) * 16;
+      var ch = chordAt(s, STUDY_CH, 'i', gb);
+      r = rng(s.seed + 104729 * (gb + 1));   // ngẫu nhiên theo ô nhịp của cả phiên, để hai chunk chồng nhau khớp nhau
+
+      K.pad(t0, bar + 0.9, ch.keys.map(function (o) { return s.root + o; }), {
+        type: 'triangle', det: 11, a: 0.5, r: 0.9, peak: 0.08, fc0: 900, fc1: 1100, q: 0.5, dest: pad
+      });
+
+      // hai lần bấm hợp âm mỗi ô nhịp; lần sau nhẹ hơn và đôi khi đến sớm
+      var hits = [[0, 1], [r.chance(0.25) ? 6 : 8, 0.7]];
+      hits.forEach(function (h) {
+        var th = t0 + h[0] * st;
+        K.key(th, mtof(s.root - 12 + ch.bass), 0.14 * h[1], 0.9, lowBus);
+        ch.keys.forEach(function (o, i) {
+          K.key(th + i * r.range(0.012, 0.028), mtof(s.root + o), 0.28 * h[1] * r.range(0.85, 1), r.range(0.8, 1.1), keys[i & 1]);
+        });
+        K.key(th + 0.09, mtof(s.root + 12 + ch.keys[3]), 0.14 * h[1], 0.8, keys[r.int(2)]);
+      });
+
+      // một hai nốt lẻ ở giữa, không phải ô nào cũng có
+      if (r.chance(0.45)) {
+        var n = 1 + r.int(2), step = 10 + 2 * r.int(2), deg = 2 + r.int(5);
+        for (k = 0; k < n && step < 16; k++) {
+          K.key(t0 + step * st, mtof(s.root + 12 + MIN_PENT2[deg]), r.range(0.14, 0.2), 0.7, keys[r.int(2)]);
+          step += 2; deg = Math.max(0, Math.min(6, deg + r.pick([-1, 1, -2])));
+        }
       }
-      t += (n - 1) * step + r.range(7, 14);
+
+      for (k = 0; k < 16; k++) {
+        if (kicks.indexOf(base + k) >= 0) K.kick(t0 + k * st, k === 0 ? 0.23 : 0.18, 105, 64, 0.11, kickBus);
+        if (k % 2 === 0) K.tick(t0 + k * st + r.range(0, 0.004), STUDY_HAT[(k >> 1) & 3] * r.range(0.8, 1) * 0.8, 2400, hat[(k >> 1) & 1]);
+      }
     }
   }
 
-  /* ---------- Solfeggio: một âm thuần giữ suốt, nền êm tựa vào âm đó ---------- */
+  /* ---------- Solfeggio: chỉ một âm sin thuần, giữ đều ---------- */
 
   var SOLF_HZ = [174, 285, 396, 417, 528, 639, 741, 852, 963];
-  // Pad không chứa nốt gốc: nốt gốc do âm thuần giữ, nên mức của nó không đổi khi hợp âm đổi.
-  var SOLF_CH = [[7, 16, 19], [5, 9, 17], [4, 9, 16], [7, 14, 19], [5, 14, 21], [9, 16, 19]];
-  var SOLF_BELL = [2, 4, 7, 9];
+  // âm trầm cho to hơn, âm cao cho nhỏ lại, để nghe to gần như nhau
+  var SOLF_AMP = { 174: 2.4, 285: 1.8, 396: 1.45, 417: 1.5, 528: 1, 639: 1.05, 741: 0.85, 852: 0.9, 963: 0.8 };
 
-  function genSolf(K, s, ci, len, prog, spec) {
-    var r = rng(s.seed + 7919 * (ci + 1)), t;
+  function genSolf(K, s, ci, len, prog, spec, at) {
     if (spec && spec.chime) chime(K, s, spec.chime, 1.2);
-
-    // âm thuần ở đúng tần số đã chọn, kèm một âm cùng tên ở quãng tám gần giọng nói cho dày hơn
-    var head = (!spec || !!spec.xin) && len >= s.X, tail = len >= s.X * (head ? 2 : 1) + 0.05;
-    var toneBus = K.bus(0, 1, 0.12);
-    K.tone(0, s.hz, s.amp, head, tail, toneBus);
-    if (s.body !== s.hz) K.tone(0, s.body, 0.045, head, tail, toneBus);
-
-    K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 600]], q: 0.5, g: [[0, 0.09]], dest: K.bus(0, 1, 0.1) });
-    calmPads(K, s, ci, len, SOLF_CH, 2, s.X, { peak: 0.06, fc: 850, dest: [K.bus(-0.3, 0.6, 0.6), K.bus(0.3, 0.6, 0.6)] });
-
-    // chuông thưa, tránh nốt gốc để không triệt pha với âm thuần
-    var bells = [K.bus(-0.35, 0.3, 0.85), K.bus(0, 0.3, 0.85), K.bus(0.35, 0.3, 0.85)];
-    t = r.range(8, 20);
-    while (t < len) {
-      K.bell(t, mtof(s.root + 24 + r.pick(SOLF_BELL)), r.range(0.04, 0.06), r.range(3.5, 5), bells[r.int(3)]);
-      t += r.range(18, 36);
-    }
+    var head = spec ? (spec.xin ? 'piece' : null) : 'chunk';
+    var tail = !at.last ? 'chunk' : at.xout && !at.final ? 'piece' : null;
+    if (head && len < s.X) head = null;
+    if (tail && len < s.X * (head ? 2 : 1) + 0.05) tail = null;
+    K.tone(0, s.hz, s.amp, head, tail, K.bus(0, 1, 0));
   }
 
   function genEnd(K, s) { chime(K, s, 'end', 0.4); }
@@ -686,16 +725,16 @@
     seed = (seed === undefined ? Math.floor(Math.random() * 0xFFFFFFFF) : seed) >>> 0;
     var r = rng(seed);
     var s = {
-      mode: mode, seed: seed, ci: 0, chords: [], patterns: [],
-      rT: rng(seed ^ 0x9E3779B9), rP: rng(seed ^ 0x51ED270B),
+      mode: mode, seed: seed, ci: 0, chords: [],
+      rT: rng(seed ^ 0x9E3779B9),
       ph1: r.range(0, TAU), ph2: r.range(0, TAU)
     };
     var bar;
     if (mode === 'focus') {
-      s.bpm = r.pick([84, 88, 92, 96]); s.root = r.pick([45, 46, 48, 50]);
-      bar = 240 / s.bpm; s.chunkBars = 32; s.B = 32 * bar; s.X = 4 * bar;
-      s.per1 = r.range(45, 70); s.per2 = r.range(30, 50);
-      s.ticks = r.chance(0.65); s.wet = 0.5; s.trim = 1.15; s.finalFade = 25;
+      s.bpm = 60; s.root = r.pick([47, 48, 49, 50]);
+      bar = 240 / s.bpm; s.chunkBars = 24; s.B = 24 * bar; s.X = 3 * bar;
+      s.per1 = r.range(50, 80); s.per2 = r.range(40, 65);
+      s.wet = 0.55; s.trim = 0.95; s.finalFade = 25;
     } else if (mode === 'deep') {
       s.bpm = r.pick([60, 63, 66]); s.root = r.pick([40, 41, 43, 45]);
       bar = 240 / s.bpm; s.chunkBars = 24; s.B = 24 * bar; s.X = 3 * bar;
@@ -705,17 +744,17 @@
       s.root = r.pick([48, 50, 53]);
       s.B = 12; s.X = 2; s.wet = 0.7; s.trim = 1.0; s.finalFade = 3;
     } else if (mode === 'study') {
-      s.calm = true; s.seamless = true;
-      s.root = r.pick([43, 45, 46, 48]);
-      s.B = 84; s.X = 12; s.wet = 0.6; s.trim = 1.25; s.finalFade = 25;
+      s.bpm = r.pick([76, 80, 84]); s.root = r.pick([57, 58, 59, 60]);
+      bar = 240 / s.bpm; s.chunkBars = 28; s.B = 28 * bar; s.X = 4 * bar;
+      s.kick = r.int(STUDY_KICK.length);
+      s.wet = 0.4; s.trim = 1.0; s.finalFade = 25;
     } else if (mode === 'solf') {
-      // B = 84 giây là bội của chu kỳ mọi âm thuần ở đây, nên chunk nào cũng bắt đầu đúng pha 0
+      // B = 84 giây là bội của chu kỳ mọi tần số ở đây, nên chunk nào cũng bắt đầu đúng pha 0
       s.calm = true; s.seamless = true;
       s.hz = opts && SOLF_HZ.indexOf(opts.hz) >= 0 ? opts.hz : 528;
-      s.body = s.hz; while (s.body >= 370) s.body /= 2; while (s.body < 185) s.body *= 2;
-      s.root = 57 + 12 * Math.log(s.body / 440) / Math.LN2;   // pad lấy âm thuần làm nốt gốc
-      s.amp = Math.max(0.05, Math.min(0.11, 0.07 * Math.sqrt(528 / s.hz)));   // âm cao nghe to hơn nên cho nhỏ lại
-      s.B = 84; s.X = 12; s.wet = 0.6; s.trim = 1.15; s.finalFade = 25;
+      s.root = 60;   // chỉ dùng cho chuông báo
+      s.amp = 0.045 * SOLF_AMP[s.hz];
+      s.B = 84; s.X = 12; s.wet = 0; s.trim = 1.0; s.finalFade = 25;
     } else {
       // sleep và rest: không có nhịp nên hai đoạn kế nhau có thể phát chồng lên nhau để nối liền mạch
       var sleep = mode === 'sleep';
@@ -749,6 +788,7 @@
   /* spec: { chunks: n } hoặc { final: giây }, kèm:
    *   fadeIn  giây mở dần ở đầu đoạn
    *   xin     đầu đoạn dùng đường cong crossfade dài X giây, để phát chồng lên đuôi đoạn trước
+   *   xout    đuôi đoạn sẽ được đoạn kế phát chồng lên
    *   chime   'focus' | 'rest': chuông báo ở đầu đoạn
    *   prog    [đầu, cuối] tiến độ hẹn giờ của Sleep
    * Trả về null nếu aborted() báo huỷ giữa chừng. */
@@ -786,7 +826,8 @@
       var len = lens[k], last = k === n - 1;
       var ctx = new OAC(2, len, SR);
       var K = makeKit(ctx, s, ci0 + k, len / SR);
-      GEN[s.mode](K, s, ci0 + k, len / SR, prog[0] + (prog[1] - prog[0]) * (n > 1 ? k / (n - 1) : 0), k === 0 ? spec : null);
+      GEN[s.mode](K, s, ci0 + k, len / SR, prog[0] + (prog[1] - prog[0]) * (n > 1 ? k / (n - 1) : 0), k === 0 ? spec : null,
+        { last: last, final: !!spec.final, xout: !!spec.xout });
       K.sort();
       var lazyOk = typeof ctx.suspend === 'function' && typeof ctx.resume === 'function';
       K.flush(lazyOk ? WIN + LEAD : Infinity);
