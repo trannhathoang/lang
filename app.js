@@ -11,7 +11,7 @@
     deep: { name: 'Deep Focus', desc: 'Trầm, đều, ít biến động, cho việc cần tập trung cao' },
     study: { name: 'Study', desc: 'Nhịp lo-fi chậm, phím đàn ấm, cho lúc đọc và học' },
     solf: { name: 'Solfeggio', desc: 'Một âm thuần duy nhất, giữ đều' },
-    sleep: { name: 'Sleep', desc: 'Chuông chậm mở đầu, nền đều, rồi mưa hoặc sóng' },
+    sleep: { name: 'Sleep', desc: 'Chuông chậm mở đầu, nền đều, rồi sóng biển khẽ' },
     rest: { name: 'Nghỉ', desc: 'Rời mắt khỏi màn hình, thả lỏng một lát' },
     end: { name: 'Xong', desc: 'Đã hoàn thành các vòng tập trung' }
   };

@@ -371,16 +371,6 @@
       src.start(t, K.r.f() * 2.5, 0.14); done(t + 0.22, g);
     });
 
-    // một giọt mưa: tiếng lách tách rất ngắn
-    K.drop = lazy(function (t, vel, f, dest) {
-      var src = ctx.createBufferSource(); src.buffer = noiseBuf('white');
-      var bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = 2.5;
-      var g = ctx.createGain();
-      decay(g, t, 0.001, vel, 0.008);
-      src.connect(bp); bp.connect(g); g.connect(dest);
-      src.start(t, K.r.f() * 12, 0.08); done(t + 0.15, g);
-    });
-
     return K;
   }
 
@@ -549,7 +539,7 @@
   var MAJ_PENT = [0, 2, 4, 7, 9];
   // các bè trên, tính từ quãng tám phía trên nốt trì
   var CALM_CH = [[7, 12, 16, 19], [5, 9, 12, 17], [4, 9, 12, 16], [7, 12, 14, 19], [5, 12, 14, 21], [7, 11, 14, 16]];
-  var RAIN_HISS = 0.06, RAIN_BODY = 0.24, RAIN_DROP = 0.055, WAVE_FLOOR = 0.08, WAVE_PEAK = 0.3;
+  var WAVE_FLOOR = 0.08, WAVE_PEAK = 0.3;
 
   function calmChord(s, i, table) {
     table = table || CALM_CH;
@@ -613,7 +603,7 @@
   // Mỗi nhóm đổi mức rất chậm, tính bằng dB:
   // [từ giây 110 đến phút 3, thêm từ phút 6 đến phút 14, thêm khi hẹn giờ gần hết].
   // Phần trên lặn dần, phần trầm lúc đầu nổi lên một chút rồi cũng nhỏ đi, nên càng về sau càng
-  // tối và nhỏ; tới lúc có mưa hoặc sóng thì nền chỉ còn là tiếng ngân trầm, khẽ.
+  // tối và nhỏ; tới lúc có sóng thì nền chỉ còn là tiếng ngân trầm, khẽ.
   var SLEEP_TREND = { sub: [3, -3.5, -1], low: [3, -5.5, -1], up: [-3.5, -16.5, -5], third: [-7.5, -13, -6] };
   var SLEEP_PENT = [-5, -3, 0, 2, 4];   // các nốt chuông quanh nốt chủ ở quãng tám cao
   var SLEEP_BELL = 0.1;
@@ -688,8 +678,8 @@
     return Math.pow(10, db / 20);
   }
 
-  // tiếng mưa hoặc sóng vào dần từ phút thứ 14 đến phút thứ 17
-  function natureLevel(tg) { return Math.max(0, Math.min(1, (tg - 840) / 180)); }
+  // tiếng sóng vào dần từ phút thứ 14 đến phút thứ 17
+  function waveLevel(tg) { return Math.max(0, Math.min(1, (tg - 840) / 180)); }
 
   function genSleep(K, s, ci, len, prog, spec, at) {
     var ctx = K.ctx, g0 = ci * s.B, r = rng(s.seed + 7919 * (ci + 1)), t, i;
@@ -733,47 +723,33 @@
       if (b.t >= g0 && b.t < g0 + len) K.bell(b.t - g0, mtof(s.root + 48 + b.semi), b.vel * (1 - 0.6 * prog), b.tau, bells[b.pan]);
     }
 
-    var lv0 = natureLevel(g0), lv1 = natureLevel(g0 + len), calm = 1 - 0.35 * prog;
+    var lv0 = waveLevel(g0), lv1 = waveLevel(g0 + len), calm = 1 - 0.35 * prog;
     if (lv1 <= 0) return;
     function lvAt(t) { return (lv0 + (lv1 - lv0) * t / len) * calm; }
-    if (s.nature === 'rain') {
-      [-0.6, 0.6].forEach(function (pan) {
-        var dest = K.bus(pan, 1, 0.15);
-        K.noise(0, len, { kind: 'white', ftype: 'bandpass', f: [[0, 2600]], q: 0.35, g: [[0, RAIN_HISS * lvAt(0)], [len, RAIN_HISS * lvAt(len)]], dest: dest });
-        K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 1100]], q: 0.5, g: [[0, RAIN_BODY * lvAt(0)], [len, RAIN_BODY * lvAt(len)]], dest: dest });
-      });
-      var drops = [K.bus(-0.7, 1, 0.1), K.bus(-0.25, 1, 0.1), K.bus(0.25, 1, 0.1), K.bus(0.7, 1, 0.1)];
-      t = 0;
-      while (t < len) {
-        if (lvAt(t) > 0.05) K.drop(t, r.range(0.2, 1) * RAIN_DROP * lvAt(t), r.range(2500, 7000), drops[r.int(4)]);
-        t += r.range(0.03, 0.3);
-      }
-    } else {
-      // Sóng: khẽ và đục, dâng nhanh rồi rút chậm, đợt nọ gối lên đợt kia. Mỗi tai một nguồn nhiễu
-      // riêng nên tiếng sóng trải rộng; bộ lọc thông cao giữ cho sóng không làm phần trầm phập phồng.
-      var surf = ctx.createBiquadFilter();
-      surf.type = 'highpass'; surf.frequency.value = 280; surf.Q.value = 0.5;
-      surf.connect(K.bus(0, 1, 0.15));
-      var shore = [K.pan(-1, surf), K.pan(1, surf)];
-      shore.forEach(function (dest) {
-        K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 700]], q: 0.5, g: [[0, WAVE_FLOOR * lvAt(0)], [len, WAVE_FLOOR * lvAt(len)]], dest: dest });
-      });
-      t = r.range(0, 3);
-      while (t < len) {
-        var up = r.range(1.2, 2.2), down = r.range(3.5, 5.5), pk = r.range(0.5, 1) * WAVE_PEAK * lvAt(t), fpk = r.range(1000, 1750);
-        if (pk > 0.002) {
-          shore.forEach(function (dest) {
-            var lag = r.range(0, 0.35);
-            K.noise(t + lag, up + down, {
-              kind: 'pink', ftype: 'lowpass', q: 0.6,
-              f: [[t + lag, 350], [t + lag + up, fpk], [t + lag + up + down, 350]],
-              g: [[t + lag, 0], [t + lag + up, pk], [t + lag + up + down, 0]],
-              dest: dest
-            });
+    // Sóng: khẽ và đục, dâng nhanh rồi rút chậm, đợt nọ gối lên đợt kia. Mỗi tai một nguồn nhiễu
+    // riêng nên tiếng sóng trải rộng; bộ lọc thông cao giữ cho sóng không làm phần trầm phập phồng.
+    var surf = ctx.createBiquadFilter();
+    surf.type = 'highpass'; surf.frequency.value = 280; surf.Q.value = 0.5;
+    surf.connect(K.bus(0, 1, 0.15));
+    var shore = [K.pan(-1, surf), K.pan(1, surf)];
+    shore.forEach(function (dest) {
+      K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 700]], q: 0.5, g: [[0, WAVE_FLOOR * lvAt(0)], [len, WAVE_FLOOR * lvAt(len)]], dest: dest });
+    });
+    t = r.range(0, 3);
+    while (t < len) {
+      var up = r.range(1.2, 2.2), down = r.range(3.5, 5.5), pk = r.range(0.5, 1) * WAVE_PEAK * lvAt(t), fpk = r.range(1000, 1750);
+      if (pk > 0.002) {
+        shore.forEach(function (dest) {
+          var lag = r.range(0, 0.35);
+          K.noise(t + lag, up + down, {
+            kind: 'pink', ftype: 'lowpass', q: 0.6,
+            f: [[t + lag, 350], [t + lag + up, fpk], [t + lag + up + down, 350]],
+            g: [[t + lag, 0], [t + lag + up, pk], [t + lag + up + down, 0]],
+            dest: dest
           });
-        }
-        t += r.range(3, 6);
+        });
       }
+      t += r.range(3, 6);
     }
   }
 
@@ -904,7 +880,6 @@
       s.calm = true; s.seamless = true;
       s.root = r.pick(sleep ? [35, 36, 37, 38] : [41, 43, 45]);
       s.B = 84; s.X = 12; s.wet = 0.7; s.trim = sleep ? 1.0 : 1.2; s.finalFade = sleep ? 80 : 15;
-      s.nature = sleep ? r.pick(['rain', 'waves']) : null;
       if (sleep) sleepSetup(s, rng(seed ^ 0x2545F491));
     }
     return s;
