@@ -549,7 +549,7 @@
   var MAJ_PENT = [0, 2, 4, 7, 9];
   // các bè trên, tính từ quãng tám phía trên nốt trì
   var CALM_CH = [[7, 12, 16, 19], [5, 9, 12, 17], [4, 9, 12, 16], [7, 12, 14, 19], [5, 12, 14, 21], [7, 11, 14, 16]];
-  var RAIN_HISS = 0.1, RAIN_BODY = 0.4, RAIN_DROP = 0.09, WAVE_FLOOR = 0.25, WAVE_PEAK = 0.75;
+  var RAIN_HISS = 0.06, RAIN_BODY = 0.24, RAIN_DROP = 0.055, WAVE_FLOOR = 0.08, WAVE_PEAK = 0.3;
 
   function calmChord(s, i, table) {
     table = table || CALM_CH;
@@ -606,13 +606,15 @@
   // đủ xa để chỗ chúng giao thoa chỉ là rung nhẹ, nhanh, chứ không thành những đợt phồng xẹp chậm.
   // [nửa cung, biên độ, số bè, độ lệch tối đa (cent), nhóm]
   var SLEEP_NOTES = [
-    [-12, 0.035, 1, 0, 'low'], [0, 0.06, 1, 0, 'low'], [7, 0.036, 4, 12, 'low'],
+    [-12, 0.035, 1, 0, 'sub'], [0, 0.06, 1, 0, 'low'], [7, 0.036, 4, 12, 'low'],
     [12, 0.078, 6, 19, 'up'], [16, 0.108, 6, 16, 'third'], [19, 0.114, 6, 15, 'up'],
     [24, 0.092, 6, 18, 'up'], [28, 0.023, 2, 6, 'up']
   ];
-  // Mỗi nhóm đổi mức rất chậm, tính bằng dB: [sau vài phút đầu, khi hẹn giờ gần hết].
-  // Phần trên lặn dần, phần trầm nổi lên một chút, nên càng về sau càng tối và nhỏ.
-  var SLEEP_TREND = { low: [3, -1], up: [-3.5, -5], third: [-7.5, -6] };
+  // Mỗi nhóm đổi mức rất chậm, tính bằng dB:
+  // [từ giây 110 đến phút 3, thêm từ phút 6 đến phút 14, thêm khi hẹn giờ gần hết].
+  // Phần trên lặn dần, phần trầm lúc đầu nổi lên một chút rồi cũng nhỏ đi, nên càng về sau càng
+  // tối và nhỏ; tới lúc có mưa hoặc sóng thì nền chỉ còn là tiếng ngân trầm, khẽ.
+  var SLEEP_TREND = { sub: [3, -3.5, -1], low: [3, -5.5, -1], up: [-3.5, -16.5, -5], third: [-7.5, -13, -6] };
   var SLEEP_PENT = [-5, -3, 0, 2, 4];   // các nốt chuông quanh nốt chủ ở quãng tám cao
   var SLEEP_BELL = 0.1;
 
@@ -680,8 +682,9 @@
 
   // hệ số biên độ của một nốt nền tại thời điểm tg (giây từ đầu phiên)
   function sleepLevel(n, tg, prog) {
-    var u = Math.max(0, Math.min(1, (tg - 110) / 90)), tr = SLEEP_TREND[n.group];
-    var db = tr[0] * u * u * (3 - 2 * u) + tr[1] * prog + Math.sin(TAU * tg / n.p1 + n.a1) + 0.6 * Math.sin(TAU * tg / n.p2 + n.a2);
+    var u = Math.max(0, Math.min(1, (tg - 110) / 90)), v = Math.max(0, Math.min(1, (tg - 360) / 480)), tr = SLEEP_TREND[n.group];
+    var db = tr[0] * u * u * (3 - 2 * u) + tr[1] * v * v * (3 - 2 * v) + tr[2] * prog +
+      Math.sin(TAU * tg / n.p1 + n.a1) + 0.6 * Math.sin(TAU * tg / n.p2 + n.a2);
     return Math.pow(10, db / 20);
   }
 
@@ -746,20 +749,30 @@
         t += r.range(0.03, 0.3);
       }
     } else {
-      // sóng: luôn có một lớp nền, các con sóng dâng lên trên lớp đó chứ không tắt hẳn
-      K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 600]], q: 0.5, g: [[0, WAVE_FLOOR * lvAt(0)], [len, WAVE_FLOOR * lvAt(len)]], dest: K.bus(0, 1, 0.15) });
+      // Sóng: khẽ và đục, dâng nhanh rồi rút chậm, đợt nọ gối lên đợt kia. Mỗi tai một nguồn nhiễu
+      // riêng nên tiếng sóng trải rộng; bộ lọc thông cao giữ cho sóng không làm phần trầm phập phồng.
+      var surf = ctx.createBiquadFilter();
+      surf.type = 'highpass'; surf.frequency.value = 280; surf.Q.value = 0.5;
+      surf.connect(K.bus(0, 1, 0.15));
+      var shore = [K.pan(-1, surf), K.pan(1, surf)];
+      shore.forEach(function (dest) {
+        K.noise(0, len, { kind: 'pink', ftype: 'lowpass', f: [[0, 700]], q: 0.5, g: [[0, WAVE_FLOOR * lvAt(0)], [len, WAVE_FLOOR * lvAt(len)]], dest: dest });
+      });
       t = r.range(0, 3);
       while (t < len) {
-        var up = r.range(3, 4.5), down = r.range(6, 9), pk = r.range(0.6, 1) * WAVE_PEAK * lvAt(t);
+        var up = r.range(1.2, 2.2), down = r.range(3.5, 5.5), pk = r.range(0.5, 1) * WAVE_PEAK * lvAt(t), fpk = r.range(1000, 1750);
         if (pk > 0.002) {
-          K.noise(t, up + down, {
-            kind: 'pink', ftype: 'lowpass', q: 0.6,
-            f: [[t, 350], [t + up, r.range(1100, 1900)], [t + up + down, 350]],
-            g: [[t, 0], [t + up, pk], [t + up + down, 0]],
-            dest: K.bus(r.pick([-0.5, -0.2, 0.2, 0.5]), 1, 0.2)
+          shore.forEach(function (dest) {
+            var lag = r.range(0, 0.35);
+            K.noise(t + lag, up + down, {
+              kind: 'pink', ftype: 'lowpass', q: 0.6,
+              f: [[t + lag, 350], [t + lag + up, fpk], [t + lag + up + down, 350]],
+              g: [[t + lag, 0], [t + lag + up, pk], [t + lag + up + down, 0]],
+              dest: dest
+            });
           });
         }
-        t += (up + down) * r.range(0.7, 0.85);
+        t += r.range(3, 6);
       }
     }
   }
